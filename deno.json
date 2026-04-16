@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "lib": ["deno.ns", "deno.window", "dom"]
+  },
+  "tasks": {
+    "start": "deno run --allow-all main.ts",
+    "check": "deno check main.ts"
+  },
+  "fmt": {
+    "lineWidth": 100,
+    "semiColons": true,
+    "singleQuote": false
+  }
+}

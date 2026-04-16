@@ -1,0 +1,11 @@
+# Deno
+.deno/
+deno.lock
+
+# Cache & Local Storage
+.gemini/
+.smallcode/cache/
+
+# OS Files
+.DS_Store
+Thumbs.db
