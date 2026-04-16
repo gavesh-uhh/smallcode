@@ -15,7 +15,7 @@ export class OllamaClient {
   private model: string;
   constructor(
     private readonly baseUrl = "http://localhost:11434",
-    defaultModel = "gemma4:latest",
+    defaultModel = "qwen2.5:7b",
   ) {
     this.model = defaultModel;
   }
