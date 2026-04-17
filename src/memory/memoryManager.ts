@@ -7,15 +7,31 @@ interface ScratchStep {
   observation: string;
 }
 
+interface MemoryFact {
+  key: string;
+  value: string;
+  source: string;
+  confidence: number;
+  ttlTurns: number;
+  createdAtTurn: number;
+}
+
 export class MemoryManager {
   private history: Message[] = [];
   private scratchpad: ScratchStep[] = [];
   private fileSummaries = new Map<string, string>();
+  private facts = new Map<string, MemoryFact>();
+  private turn = 0;
 
   constructor(private maxHistory = 64) {}
 
   setMaxHistory(limit: number): void {
     this.maxHistory = limit;
+  }
+
+  nextTurn(): void {
+    this.turn += 1;
+    this.pruneExpiredFacts();
   }
 
   addMessage(message: Message): void {
@@ -63,6 +79,38 @@ export class MemoryManager {
     this.fileSummaries.set(path, trim(summary, 400));
   }
 
+  setFact(
+    key: string,
+    value: string,
+    source: string,
+    confidence: number,
+    ttlTurns = 8,
+  ): void {
+    this.facts.set(key, {
+      key: trim(key, 80),
+      value: trim(value, 220),
+      source: trim(source, 80),
+      confidence: Math.max(0, Math.min(1, confidence)),
+      ttlTurns: Math.max(1, Math.min(64, ttlTurns)),
+      createdAtTurn: this.turn,
+    });
+  }
+
+  getFactsText(limit = 8): string {
+    if (this.facts.size === 0) {
+      return "";
+    }
+    const rows = [...this.facts.values()]
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, limit)
+      .map((fact) => {
+        const confidence = fact.confidence.toFixed(2);
+        const age = this.turn - fact.createdAtTurn;
+        return `${fact.key}=${fact.value} (src:${fact.source},c:${confidence},age:${age})`;
+      });
+    return rows.join("\n");
+  }
+
   getFileSummaries(): string {
     if (this.fileSummaries.size === 0) {
       return "No file summaries.";
@@ -85,6 +133,16 @@ export class MemoryManager {
     this.history = [];
     this.scratchpad = [];
     this.fileSummaries.clear();
+    this.facts.clear();
+    this.turn = 0;
+  }
+
+  private pruneExpiredFacts(): void {
+    for (const [key, fact] of this.facts.entries()) {
+      if (this.turn - fact.createdAtTurn >= fact.ttlTurns) {
+        this.facts.delete(key);
+      }
+    }
   }
 }
 

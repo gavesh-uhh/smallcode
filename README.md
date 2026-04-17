@@ -1,6 +1,6 @@
 # smallcode
 
-**smallcode** is a local-first agentic  harness. It is specifically made for Small Language Models (8B-9B) Qwen 3.5/Gemma4/etc..
+**smallcode** is a local-first agentic harness. It is specifically made for small language models under 15B parameters (Qwen, Gemma, Mistral, etc.).
 
 ## To Do
 - [ ] Centralize temperature values to a explicit file for easier tweaking

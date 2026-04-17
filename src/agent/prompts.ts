@@ -6,6 +6,9 @@ type DecisionPromptArgs = {
   toolList: string;
   scratchpad: string;
   fileSummaries: string;
+  facts: string;
+  osHint: string;
+  stage: string;
 };
 
 type FinalPromptArgs = {
@@ -15,28 +18,33 @@ type FinalPromptArgs = {
 
 export const SCHEMA_DEFINITION = [
   "{",
-  '  "thought": "ANALYSIS: [what was learned] \\n REFLECT: [are we on track?] \\n GOAL: [detailed next micro-goal]",',
+  '  "reason": "One short sentence about why this is the best next move.",',
   '  "action": "tool" | "respond",',
   '  "tool": "name_of_tool" (required ONLY if action is "tool"),',
-  '  "input": { ... } (required ONLY if action is "tool")',
+  '  "input": { ... } (required ONLY if action is "tool"),',
+  '  "expected_observation": "Short success signal for the chosen move"',
   "}",
 ].join("\n");
 
 export function buildDecisionPrompt(args: DecisionPromptArgs): string {
   const profileRules = [
-    "You are running on a local model. Be extremely precise and detail-oriented.",
-    "Always provide the 'thought' property with ANALYSIS, REFLECT, and GOAL.",
-    "PRECISION EDITING: Prefer 'file_edit' with line ranges for modifying files.",
-    "READ-THEN-EDIT: You MUST run 'file_reader' to get line numbers before calling 'file_edit'.",
-    "FAIL-SAFE: 'file_writer' without 'searchString' will block destructive overwrites unless 'allowOverwrite' is true. Prefer 'file_edit'.",
-    "Never hallucinate success. If you haven't called a tool to perform an action, you are NOT finished.",
+    "You are optimized for low-parameter local models (<15B). Keep decisions compact and deterministic.",
+    "Never claim completion unless evidence exists in tool observations.",
+    "Use exactly one next action per step.",
+    "Use platform-aware shell commands. OS hint is provided below.",
+    "If task requires file/system changes, call a tool first; do not respond early.",
   ];
 
   return [
-    "You are a local coding agent.",
+    "You are a local coding agent with tool-based execution.",
     ...profileRules,
+    `Execution stage: ${args.stage}`,
+    `Profile: ${args.profile}`,
+    `OS: ${args.osHint}`,
     "Available tools:",
     args.toolList,
+    "Structured facts:",
+    args.facts || "No structured facts.",
     "Recent steps:",
     args.scratchpad || "No previous steps.",
     "File summaries:",
@@ -140,6 +148,7 @@ export function buildFinalSystemPrompt(args: FinalPromptArgs): string {
     : "Respond with a concise final answer.";
   return [
     "You are a terminal coding assistant.",
+    "Only state outcomes supported by tool observations in context.",
     warning,
     `Original task: ${args.task}`,
   ].join("\n");

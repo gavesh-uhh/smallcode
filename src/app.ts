@@ -6,16 +6,9 @@ import { MemoryManager } from "./memory/memoryManager.ts";
 import {
   CodeRunnerTool,
   DelegateTaskTool,
-  DirectoryListerTool,
-  FetchUrlTool,
-  FileEditTool,
-  FileReaderTool,
-  FileWriterTool,
   GitTool,
-  GrepSearchTool,
   ShellCommandTool,
-  SymbolSearchTool,
-} from "./tools/builtinTools.ts";
+} from "./tools/tools.ts";
 
 import { ToolRegistry } from "./tools/registry.ts";
 import type { Message, MissionPlan, MissionStep } from "./types.ts";
@@ -288,7 +281,7 @@ export async function runApp(): Promise<void> {
             steps,
             currentIndex: 0,
           };
-          current.viewModel.addInfo(style.bold(`${icon.success} Mission Roadmap Generated:`));
+          current.viewModel.addInfo(style.bold(`${icon.check} Mission Roadmap Generated:`));
           steps.forEach((s) => {
             current.viewModel.addInfo(`${s.id}. [ ] ${s.instruction}`);
           });
@@ -402,9 +395,10 @@ export async function runApp(): Promise<void> {
         return true;
       }
       case "/files": {
+        const cmd = arg ? `ls -la "${arg}"` : "ls -la .";
         const listText = await current.tools
-          .get("directory_lister")!
-          .execute(JSON.stringify({ path: arg || ".", depth: 4 }));
+          .get("shell_command")!
+          .execute(JSON.stringify({ command: cmd, cwd: "." }));
         current.viewModel.addInfo(listText);
         return true;
       }
@@ -577,7 +571,7 @@ export async function runApp(): Promise<void> {
     vm.addInfo(
       `${
         style.bold("  /plan <task> ")
-      } - Deconstruct a large task into a mission plan (5b-9b optimized)`,
+      } - Deconstruct a large task into a mission plan (<15B optimized)`,
     );
     vm.addInfo(
       `${style.bold("  /next        ")} - Execute the next step in the active mission plan`,
@@ -615,6 +609,7 @@ export async function runApp(): Promise<void> {
               llm.getModel(),
               session.title,
               `${currentStep}/${agentRuntime.maxIterations}`,
+              "",
               sessions.size,
               Array.from(sessions.keys()).indexOf(session.id),
             );
@@ -627,6 +622,7 @@ export async function runApp(): Promise<void> {
               llm.getModel(),
               session.title,
               `${currentStep} · ${tool}`,
+              "",
               sessions.size,
               Array.from(sessions.keys()).indexOf(session.id),
             );
@@ -634,10 +630,11 @@ export async function runApp(): Promise<void> {
           }
           if (line.startsWith("Observation:")) {
             const summary = line.slice("Observation:".length).trim();
+            const status = isFailureObservation(summary) ? "error" : "done";
             session.viewModel.updateToolStatus(
               currentStep,
-              summary.toLowerCase().includes("tool error") ? "error" : "done",
-              summary,
+              status,
+              summarizeObservationForUi(summary, status),
             );
             return;
           }
@@ -716,15 +713,8 @@ export async function runApp(): Promise<void> {
       },
     };
 
-    toolsContext.register(new DirectoryListerTool(context));
-    toolsContext.register(new FileReaderTool(context));
-    toolsContext.register(new FileWriterTool(context));
-    toolsContext.register(new FileEditTool(context));
-    toolsContext.register(new SymbolSearchTool(context));
     toolsContext.register(new ShellCommandTool(context));
     toolsContext.register(new CodeRunnerTool(context));
-    toolsContext.register(new GrepSearchTool(context));
-    toolsContext.register(new FetchUrlTool(context));
     toolsContext.register(new GitTool(context));
     toolsContext.register(new DelegateTaskTool(context));
 
@@ -768,4 +758,25 @@ export async function runApp(): Promise<void> {
 
 function asMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isFailureObservation(summary: string): boolean {
+  const lower = summary.toLowerCase();
+  return lower.includes("tool error") ||
+    lower.includes("result: failed") ||
+    lower.includes("result: timeout") ||
+    lower.includes("exit_code: -1") ||
+    lower.includes("not found");
+}
+
+function summarizeObservationForUi(
+  summary: string,
+  status: "done" | "error",
+): string {
+  if (status === "error") {
+    if (summary.toLowerCase().includes("timeout")) return "Timed out";
+    if (summary.toLowerCase().includes("not found")) return "Not found";
+    return "Failed";
+  }
+  return "Completed";
 }

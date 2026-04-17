@@ -3,10 +3,8 @@ import {
   formatMarkdown,
   hr,
   icon,
-  padRight,
   splitLines,
   style,
-  truncateVisible,
   visibleLength,
   wrapText,
 } from "./style.ts";
@@ -270,7 +268,7 @@ export class ViewModel {
     // Row N-1:    EMPTY (Windows Console safety boundary for stdin reading)
     const viewportHeight = Math.max(1, rows - 5);
 
-    const statusLine = this.renderStatusBar(cols, rows);
+    const statusLine = this.renderStatusBar(cols);
     const topSep = hr(cols);
     const inputLine = this.renderInputLine(cols);
 
@@ -318,157 +316,129 @@ export class ViewModel {
 
   private buildDocumentLines(cols: number): string[] {
     const lines: string[] = [];
-    const contentWidth = Math.max(20, cols - 2);
-
-    const gutterLen = 4;
+    const contentWidth = Math.max(14, cols - 2);
+    let prevKind: LogEntry["kind"] | null = null;
 
     for (const entry of this.log) {
+      if (shouldSectionBreak(prevKind, entry.kind) && lines.length > 0 && lines[lines.length - 1] !== "") {
+        lines.push("");
+      }
       switch (entry.kind) {
         case "user": {
-          lines.push("");
-          const prefix = ` ${style.cyan(icon.user)}  `;
-          const formatted = formatMarkdown(entry.text);
-          const wrapped = wrapText(formatted, contentWidth - gutterLen);
-          lines.push(prefix + wrapped[0]);
-          for (let i = 1; i < wrapped.length; i++) {
-            lines.push(" ".repeat(gutterLen) + wrapped[i]);
-          }
+          this.pushBlock(lines, ` ${style.cyan(icon.user)}  `, formatMarkdown(entry.text), contentWidth);
           break;
         }
         case "assistant": {
-          lines.push("");
-          const prefix = ` ${style.green(icon.assistant)}  `;
-          const formatted = formatMarkdown(entry.text);
-          const wrapped = wrapText(formatted, contentWidth - gutterLen);
-          lines.push(prefix + wrapped[0]);
-          for (let i = 1; i < wrapped.length; i++) {
-            lines.push(" ".repeat(gutterLen) + wrapped[i]);
-          }
+          this.pushBlock(
+            lines,
+            ` ${style.green(icon.assistant)}  `,
+            formatMarkdown(entry.text),
+            contentWidth,
+          );
           break;
         }
         case "thought": {
-          lines.push("");
-          const prefix = ` ${style.magenta(icon.thought)}  `;
-          const wrapped = wrapText(entry.text, contentWidth - gutterLen);
-          lines.push(prefix + style.italic(style.dim(wrapped[0])));
-          for (let i = 1; i < wrapped.length; i++) {
-            lines.push(" ".repeat(gutterLen) + style.italic(style.dim(wrapped[i])));
-          }
+          this.pushBlock(
+            lines,
+            ` ${style.magenta(icon.thought)}  `,
+            entry.text,
+            contentWidth,
+            (s) => style.italic(style.dim(s)),
+          );
           break;
         }
         case "tool-summary": {
+          lines.push(style.dim(` ${icon.tool}  tools`));
           if (entry.tools && entry.tools.length > 0) {
             for (const t of entry.tools) {
-              const statusIcon = t.status === "done"
-                ? style.green(icon.check)
-                : t.status === "error"
-                ? style.red(icon.cross)
-                : style.yellow(icon.spinner);
-              lines.push(
-                ` ${style.yellow(icon.tool)}  ${style.dim(`step ${t.step}`)} ${
-                  style.dim("·")
-                } ${t.tool} ${statusIcon}`,
-              );
+              this.pushToolLine(lines, contentWidth, t);
             }
           } else {
-            lines.push(` ${style.yellow(icon.tool)}  ${style.dim(entry.text)}`);
+            this.pushBlock(lines, ` ${style.yellow(icon.tool)}  `, style.dim(entry.text), contentWidth);
           }
           break;
         }
         case "info": {
-          const prefix = ` ${style.blue(icon.info)}  `;
-          const wrapped = wrapText(entry.text, contentWidth - gutterLen);
-          lines.push(prefix + wrapped[0]);
-          for (let i = 1; i < wrapped.length; i++) {
-            lines.push(" ".repeat(gutterLen) + wrapped[i]);
-          }
+          this.pushBlock(lines, ` ${style.blue(icon.info)}  `, entry.text, contentWidth);
           break;
         }
         case "warn": {
-          const prefix = ` ${style.yellow(icon.warn)}  `;
-          const wrapped = wrapText(entry.text, contentWidth - gutterLen);
-          lines.push(prefix + style.yellow(wrapped[0]));
-          for (let i = 1; i < wrapped.length; i++) {
-            lines.push(" ".repeat(gutterLen) + style.yellow(wrapped[i]));
-          }
+          this.pushBlock(
+            lines,
+            ` ${style.yellow(icon.warn)}  `,
+            entry.text,
+            contentWidth,
+            (s) => style.yellow(s),
+          );
           break;
         }
         case "error": {
-          const prefix = ` ${style.red(icon.error)}  `;
-          const wrapped = wrapText(entry.text, contentWidth - gutterLen);
-          lines.push(prefix + style.red(wrapped[0]));
-          for (let i = 1; i < wrapped.length; i++) {
-            lines.push(" ".repeat(gutterLen) + style.red(wrapped[i]));
-          }
+          this.pushBlock(
+            lines,
+            ` ${style.red(icon.error)}  `,
+            entry.text,
+            contentWidth,
+            (s) => style.red(s),
+          );
           break;
         }
       }
+      prevKind = entry.kind;
     }
 
     if (this.activeTools.length > 0) {
-      for (const t of this.activeTools) {
-        const statusIcon = t.status === "running"
-          ? style.yellow(icon.spinner)
-          : t.status === "done"
-          ? style.green(icon.check)
-          : style.red(icon.cross);
-        lines.push(
-          ` ${style.yellow(icon.tool)}  ${style.dim(`step ${t.step}`)} ${
-            style.dim("·")
-          } ${t.tool} ${statusIcon}`,
-        );
+      if (lines.length > 0 && lines[lines.length - 1] !== "") {
+        lines.push("");
       }
+      lines.push(style.dim(` ${icon.tool}  active tools`));
+      for (const t of this.activeTools) {
+        this.pushToolLine(lines, contentWidth, t);
+      }
+      prevKind = "tool";
     }
 
     if (this.streaming) {
-      if (this.reasoningBuffer) {
+      if (lines.length > 0 && lines[lines.length - 1] !== "") {
         lines.push("");
-        const prefix = ` ${style.magenta(icon.thought)}  `;
-        const text = this.reasoningBuffer + style.dim("▌");
-        const wrapped = wrapText(text, contentWidth - gutterLen);
-        lines.push(prefix + style.italic(style.dim(wrapped[0])));
-        for (let i = 1; i < wrapped.length; i++) {
-          lines.push(" ".repeat(gutterLen) + style.italic(style.dim(wrapped[i])));
-        }
+      }
+      if (this.reasoningBuffer) {
+        this.pushBlock(
+          lines,
+          ` ${style.magenta(icon.thought)}  `,
+          `${this.reasoningBuffer}▌`,
+          contentWidth,
+          (s) => style.italic(style.dim(s)),
+        );
       }
       if (this.assistantBuffer) {
-        lines.push("");
-        const prefix = ` ${style.green(icon.assistant)}  `;
-        const text = this.assistantBuffer + style.dim("▌");
-        const formatted = formatMarkdown(text);
-        const wrapped = wrapText(formatted, contentWidth - gutterLen);
-        lines.push(prefix + wrapped[0]);
-        for (let i = 1; i < wrapped.length; i++) {
-          lines.push(" ".repeat(gutterLen) + wrapped[i]);
-        }
+        this.pushBlock(
+          lines,
+          ` ${style.green(icon.assistant)}  `,
+          `${this.assistantBuffer}▌`,
+          contentWidth,
+        );
       }
+      prevKind = "assistant";
     }
 
     return lines;
   }
 
-  private renderStatusBar(cols: number, rows: number): string {
-    let tabVisual = "";
-    if (this.tabTotal > 1) {
-      const tabs = Array.from({ length: this.tabTotal }).map((_, i) =>
-        i === this.tabActive ? style.cyan("◼") : style.dim("◻")
-      ).join(" ");
-      tabVisual = ` ${tabs} ${style.dim(` ${icon.sep} `)}`;
-    }
+  private renderStatusBar(cols: number): string {
+    const sep = style.dim(` ${icon.sep} `);
+    const tabVisual = this.tabTotal > 1 ? `${style.dim(`${icon.tab} `)}${this.tabActive + 1}/${this.tabTotal}` : "";
+    const contextPart = this.statusContext ? style.dim(this.statusContext) : "";
 
     const parts = [
-      style.bold(" smallcode"),
-      style.dim(` ${icon.sep} `),
+      style.bold(" smallcode "),
       `${style.dim(`${icon.model} `)}${this.statusModel}`,
-      style.dim(` ${icon.sep} `),
-      tabVisual,
       `${style.dim(`${icon.session} `)}${this.statusSession}`,
-      style.dim(` ${icon.sep} `),
-      style.dim(this.statusContext),
-      this.statusContext ? style.dim(` ${icon.sep} `) : "",
+      tabVisual,
+      contextPart,
       this.statusState,
-    ];
-    return parts.join("");
+    ].filter(Boolean);
+
+    return fitToWidth(parts.join(sep), cols);
   }
 
   private renderBottomSeparator(
@@ -495,11 +465,11 @@ export class ViewModel {
 
     if (!indicator) return hr(cols);
 
-    const indLen = indicator.length;
+    const indLen = visibleLength(indicator);
     const dashLeft = Math.max(2, Math.floor((cols - indLen) / 2));
     const dashRight = Math.max(2, cols - dashLeft - indLen);
-    return style.dim(icon.sep.repeat(dashLeft)) + style.dim(indicator) +
-      style.dim(icon.sep.repeat(dashRight));
+    return style.dim("─".repeat(dashLeft)) + style.dim(indicator) +
+      style.dim("─".repeat(dashRight));
   }
 
   private getInputPrefix(): string {
@@ -509,24 +479,88 @@ export class ViewModel {
   private renderInputLine(cols: number): string {
     const prefix = this.getInputPrefix();
     const prefixLen = visibleLength(prefix);
-    const maxInput = cols - prefixLen - 2;
+    const maxInput = Math.max(4, cols - prefixLen - 2);
 
     if (this.inputBuffer.length === 0) {
-      const placeholder = "Type a message or /help...";
-      const firstChar = placeholder[0];
-      const rest = placeholder.slice(1);
-      return prefix + style.inverse(firstChar) + style.dim(rest);
+      return prefix + style.inverse(" ") + style.dim("Type a message or /help...");
     }
 
-    const text = this.inputBuffer.length > maxInput
-      ? truncateVisible(this.inputBuffer, maxInput)
-      : this.inputBuffer;
-
-    const c = Math.min(this.inputCursor, text.length);
+    const window = this.projectInputWindow(maxInput);
+    const text = window.text;
+    const c = Math.min(window.cursor, text.length);
     const before = text.slice(0, c);
-
     const activeChar = c < text.length ? text[c] : " ";
     const after = c < text.length ? text.slice(c + 1) : "";
     return prefix + before + style.inverse(activeChar) + after;
   }
+
+  private pushToolLine(lines: string[], contentWidth: number, t: ToolEntry): void {
+    const statusIcon = t.status === "running"
+      ? style.yellow(icon.spinner)
+      : t.status === "done"
+      ? style.green(icon.check)
+      : style.red(icon.cross);
+    const base = `${style.dim(`#${t.step}`)} ${style.dim("·")} ${t.tool} ${statusIcon}`;
+    this.pushBlock(lines, ` ${style.yellow(icon.tool)}  `, base, contentWidth);
+  }
+
+  private pushBlock(
+    lines: string[],
+    prefix: string,
+    text: string,
+    contentWidth: number,
+    mapLine?: (line: string) => string,
+  ): void {
+    const prefixWidth = Math.max(2, visibleLength(prefix));
+    const wrapWidth = Math.max(8, contentWidth - prefixWidth);
+    const wrapped = wrapText(text, wrapWidth);
+    if (wrapped.length === 0) {
+      lines.push(prefix);
+      return;
+    }
+    const first = mapLine ? mapLine(wrapped[0]) : wrapped[0];
+    lines.push(prefix + first);
+    const indent = " ".repeat(prefixWidth);
+    for (let i = 1; i < wrapped.length; i++) {
+      const line = mapLine ? mapLine(wrapped[i]) : wrapped[i];
+      lines.push(indent + line);
+    }
+  }
+
+  private projectInputWindow(maxInput: number): { text: string; cursor: number } {
+    const raw = this.inputBuffer;
+    if (raw.length <= maxInput) {
+      return { text: raw, cursor: this.inputCursor };
+    }
+
+    const cursor = Math.min(this.inputCursor, raw.length);
+    const safeWidth = Math.max(4, maxInput - 2);
+    let start = Math.max(0, cursor - Math.floor(safeWidth * 0.6));
+    start = Math.min(start, Math.max(0, raw.length - safeWidth));
+    const end = Math.min(raw.length, start + safeWidth);
+    let view = raw.slice(start, end);
+    let cursorInView = cursor - start;
+
+    if (start > 0) {
+      view = `…${view}`;
+      cursorInView += 1;
+    }
+    if (end < raw.length) {
+      view = `${view}…`;
+    }
+
+    if (view.length > maxInput) {
+      view = view.slice(0, maxInput);
+      cursorInView = Math.min(cursorInView, view.length);
+    }
+
+    return { text: view, cursor: cursorInView };
+  }
+}
+
+function shouldSectionBreak(prev: LogEntry["kind"] | null, next: LogEntry["kind"]): boolean {
+  if (!prev) return false;
+  const heavy = new Set<LogEntry["kind"]>(["user", "assistant", "thought"]);
+  if (heavy.has(prev) || heavy.has(next)) return true;
+  return prev !== next;
 }

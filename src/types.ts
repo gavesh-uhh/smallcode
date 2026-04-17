@@ -30,10 +30,12 @@ export interface Tool {
 export type DecisionAction = "tool" | "respond";
 
 export interface AgentDecision {
-  thought?: string; // Rich thought containing analysis and reflection
+  reason?: string; // Compact rationale for small-model reliability
+  thought?: string; // Backward-compatible field from older prompt versions
   action: DecisionAction;
   tool?: string;
   input?: unknown;
+  expected_observation?: string;
 }
 
 export interface MissionStep {

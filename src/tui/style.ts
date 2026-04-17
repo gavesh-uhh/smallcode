@@ -23,28 +23,28 @@ export const style = {
 } as const;
 
 export const icon = {
-  user: "\uf007",
-  assistant: "\uf544",
-  tool: "\uf0ad",
-  check: "\uf00c",
-  cross: "\uf00d",
-  spinner: "\uf110",
-  dot: "·",
-  arrow: "\uf054",
-  gear: "\uf013",
-  working: "\uf110",
-  model: "\uf259",
-  session: "\uf24d",
-  warn: "\uf071",
-  error: "\uf06a",
-  info: "\uf05a",
-  folder: "\uf07b",
-  file: "\uf15b",
-  sep: "\ue0b1",
-  tab: "\uf022",
-  progFull: "\uf111",
-  progEmpty: "\uf1db",
-  thought: "\uf0eb", // Lightbulb for reasoning/thinking
+  user: "",
+  assistant: "",
+  tool: "",
+  check: "",
+  cross: "",
+  spinner: "",
+  dot: "•",
+  arrow: "",
+  gear: "",
+  working: "⟳",
+  model: "󰧑",
+  session: "",
+  warn: "",
+  error: "",
+  info: "",
+  folder: "",
+  file: "",
+  sep: "│",
+  tab: "󰓩",
+  progFull: "",
+  progEmpty: "",
+  thought: "󰟶",
 } as const;
 
 export function formatMarkdown(text: string): string {
@@ -169,7 +169,10 @@ export function wrapText(s: string, width: number): string[] {
         continue;
       }
 
-      if (currentLen + (currentLen > 0 ? 1 : 0) + wordLen > width && currentLen > 0) {
+      if (
+        currentLen + (currentLen > 0 ? 1 : 0) + wordLen > width &&
+        currentLen > 0
+      ) {
         allLines.push(current);
         current = word;
         currentLen = wordLen;
