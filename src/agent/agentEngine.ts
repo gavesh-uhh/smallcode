@@ -13,6 +13,14 @@ import {
   buildStepSummaryPrompt,
   buildVerifySuccessPrompt,
 } from "./prompts.ts";
+import {
+  analyzeArtifactRequirements,
+  artifactKey,
+  type ArtifactRequirement,
+  describeArtifact,
+  describeMissingArtifactReason,
+  hasArtifactEvidence,
+} from "./artifacts.ts";
 
 interface AgentCallbacks {
   onStatus: (line: string) => void;
@@ -46,11 +54,13 @@ interface RunState {
   lastObservation: string;
   previousSignature: string | null;
   repeatedIdenticalCount: number;
+  requiredArtifacts: ArtifactRequirement[];
+  satisfiedArtifacts: Set<string>;
 }
 
 type StepFlow = "continue" | "finish";
 
-const CRITICAL_TOOLS = new Set(["file_writer", "file_edit", "shell_command"]);
+const PREFLIGHT_TOOLS = new Set(["file_writer", "file_edit"]);
 
 export class AgentEngine {
   private settings: AgentOptions;
@@ -66,9 +76,8 @@ export class AgentEngine {
       profile: options.profile ?? "small",
       debug: options.debug ?? false,
       decisionTemperature: options.decisionTemperature ?? 0.0,
-      decisionCtx: options.decisionCtx ?? (
-        options.profile === "ultra" ? 32768 : options.profile === "balanced" ? 8192 : 4096
-      ),
+      decisionCtx: options.decisionCtx ??
+        (options.profile === "ultra" ? 32768 : options.profile === "balanced" ? 8192 : 4096),
     };
   }
 
@@ -98,7 +107,13 @@ export class AgentEngine {
 
     for (let i = 1; i <= this.settings.maxIterations; i++) {
       this.memory.nextTurn();
-      const flow = await this.runSingleStep(task, i, state, callbacks, contextSummaries);
+      const flow = await this.runSingleStep(
+        task,
+        i,
+        state,
+        callbacks,
+        contextSummaries,
+      );
       if (flow === "finish") {
         return;
       }
@@ -123,9 +138,10 @@ export class AgentEngine {
           return parsed.map(String);
         }
       }
-      return raw.split("\n").filter((l) => l.trim().length > 5).map((l) =>
-        l.replace(/^\d+\.\s*/, "").trim()
-      );
+      return raw
+        .split("\n")
+        .filter((l) => l.trim().length > 5)
+        .map((l) => l.replace(/^\d+\.\s*/, "").trim());
     } catch {
       return [task];
     }
@@ -151,6 +167,7 @@ export class AgentEngine {
   }
 
   private createRunState(task: string): RunState {
+    const artifactRequirements = analyzeArtifactRequirements(task);
     return {
       policy: classifyTaskPolicy(task),
       stage: "classify",
@@ -161,6 +178,8 @@ export class AgentEngine {
       lastObservation: "",
       previousSignature: null,
       repeatedIdenticalCount: 0,
+      requiredArtifacts: artifactRequirements,
+      satisfiedArtifacts: new Set<string>(),
     };
   }
 
@@ -173,10 +192,17 @@ export class AgentEngine {
   ): Promise<StepFlow> {
     state.stage = "decide";
     callbacks.onStatus(`Planning step ${iteration}`);
-    const decision = await this.getDecision(task, callbacks, contextSummaries, state.stage);
+    const decision = await this.getDecision(
+      task,
+      callbacks,
+      contextSummaries,
+      state.stage,
+    );
 
     if (!decision) {
-      callbacks.onStatus("Could not parse decision. Asking model for direct response.");
+      callbacks.onStatus(
+        "Could not parse decision. Asking model for direct response.",
+      );
       await this.streamFinal(task, callbacks, true);
       return "finish";
     }
@@ -185,7 +211,13 @@ export class AgentEngine {
       return await this.handleRespondDecision(task, state, callbacks);
     }
 
-    return await this.handleToolDecision(task, iteration, state, callbacks, decision);
+    return await this.handleToolDecision(
+      task,
+      iteration,
+      state,
+      callbacks,
+      decision,
+    );
   }
 
   private async handleRespondDecision(
@@ -219,7 +251,9 @@ export class AgentEngine {
   ): Promise<StepFlow> {
     const toolName = decision.tool?.trim();
     if (!toolName) {
-      callbacks.onStatus("Model returned tool action without tool name. Stopping.");
+      callbacks.onStatus(
+        "Model returned tool action without tool name. Stopping.",
+      );
       await this.streamFinal(task, callbacks, true);
       return "finish";
     }
@@ -232,7 +266,13 @@ export class AgentEngine {
       return "continue";
     }
 
-    const policyRejection = this.getToolRejection(task, iteration, state, toolName, decision.input);
+    const policyRejection = this.getToolRejection(
+      task,
+      iteration,
+      state,
+      toolName,
+      decision.input,
+    );
     if (policyRejection) {
       callbacks.onStatus(policyRejection.statusLine);
       this.memory.addMessage({
@@ -242,7 +282,7 @@ export class AgentEngine {
       return "continue";
     }
 
-    if (CRITICAL_TOOLS.has(toolName)) {
+    if (PREFLIGHT_TOOLS.has(toolName)) {
       const critique = await this.critiqueProposal(
         task,
         toolName,
@@ -250,12 +290,12 @@ export class AgentEngine {
         decision.reason || decision.thought || "",
         callbacks,
       );
-      if (critique.startsWith("ISSUE:")) {
-        callbacks.onStatus(`Sentinel Critique: ${critique}`);
+      if (critique !== "SAFE") {
+        callbacks.onStatus(`Preflight: ${critique}`);
         this.memory.addMessage({
           role: "system",
           content:
-            `Sentinel Critique rejected this action: ${critique}\nPlease fix the issue and propose a corrected tool call.`,
+            `Preflight rejected this action: ${critique}\nPlease fix the issue and propose a corrected tool call.`,
         });
         return "continue";
       }
@@ -263,7 +303,10 @@ export class AgentEngine {
 
     state.stage = "execute";
     const toolInput = stringifyInput(decision.input);
-    callbacks.onStatus(getFriendlyToolStatus(toolName, decision.input, iteration + 1));
+    const toolStep = state.toolCallsCount + 1;
+    callbacks.onStatus(
+      getFriendlyToolStatus(toolName, decision.input, toolStep),
+    );
 
     state.toolCallsCount += 1;
     if (toolName !== "delegate_task") {
@@ -271,14 +314,21 @@ export class AgentEngine {
     }
 
     const observation = await executeTool(tool, toolInput);
-    this.addToolObservation(iteration, toolName, decision.input, observation);
+    this.addToolObservation(toolStep, toolName, decision.input, observation);
     callbacks.onStatus(`Observation: ${short(observation, 280)}`);
 
-    this.updateStateFromObservation(state, observation);
+    this.updateStateFromObservation(
+      state,
+      toolName,
+      decision.input,
+      observation,
+    );
     await this.injectRecoveryHintIfNeeded(observation);
 
     if (this.detectToolLoop(state, toolName, toolInput, observation)) {
-      callbacks.onStatus("Detected repeated identical tool result. Finalizing with best effort.");
+      callbacks.onStatus(
+        "Detected repeated identical tool result. Finalizing with best effort.",
+      );
       await this.streamFinal(task, callbacks, true);
       return "finish";
     }
@@ -303,7 +353,11 @@ export class AgentEngine {
     }
 
     if (toolName === "delegate_task") {
-      const delegation = assessDelegationReadiness(task, iteration, state.nonDelegateToolCalls);
+      const delegation = assessDelegationReadiness(
+        task,
+        iteration,
+        state.nonDelegateToolCalls,
+      );
       if (!delegation.allowed) {
         return {
           statusLine: `Delegation blocked: ${delegation.reason}`,
@@ -322,15 +376,33 @@ export class AgentEngine {
     observation: string,
   ): boolean {
     const signature = `${toolName}|${toolInput}|${short(observation, 220)}`;
-    state.repeatedIdenticalCount = signature === state.previousSignature ? state.repeatedIdenticalCount + 1 : 0;
+    state.repeatedIdenticalCount = signature === state.previousSignature
+      ? state.repeatedIdenticalCount + 1
+      : 0;
     state.previousSignature = signature;
     return state.repeatedIdenticalCount >= 1;
   }
 
-  private updateStateFromObservation(state: RunState, observation: string): void {
+  private updateStateFromObservation(
+    state: RunState,
+    toolName: string,
+    input: unknown,
+    observation: string,
+  ): void {
     state.lastObservation = observation;
-    state.hasSuccessfulObservation = state.hasSuccessfulObservation || looksSuccessfulObservation(observation);
-    state.hasFailureObservation = state.hasFailureObservation || looksFailureObservation(observation);
+    const success = looksSuccessfulObservation(observation);
+    state.hasSuccessfulObservation = state.hasSuccessfulObservation || success;
+    state.hasFailureObservation = state.hasFailureObservation ||
+      looksFailureObservation(observation);
+    if (state.requiredArtifacts.length > 0 && success) {
+      for (const requirement of state.requiredArtifacts) {
+        const key = artifactKey(requirement);
+        if (state.satisfiedArtifacts.has(key)) continue;
+        if (hasArtifactEvidence(toolName, input, observation, requirement)) {
+          state.satisfiedArtifacts.add(key);
+        }
+      }
+    }
   }
 
   private addToolObservation(
@@ -339,7 +411,11 @@ export class AgentEngine {
     input: unknown,
     observation: string,
   ): void {
-    this.memory.addMessage({ role: "tool", name: toolName, content: observation });
+    this.memory.addMessage({
+      role: "tool",
+      name: toolName,
+      content: observation,
+    });
     this.memory.addScratchpadStep({
       step,
       action: toolName,
@@ -357,7 +433,9 @@ export class AgentEngine {
     let contextLS = "";
     if (lister) {
       try {
-        contextLS = await lister.execute(JSON.stringify({ path: ".", depth: 1 }));
+        contextLS = await lister.execute(
+          JSON.stringify({ path: ".", depth: 1 }),
+        );
       } catch {
         contextLS = "";
       }
@@ -379,6 +457,16 @@ export class AgentEngine {
     this.memory.setFact("task_mode", mode, "classifier", 0.95, 24);
     this.memory.setFact("os", Deno.build.os, "runtime", 1.0, 64);
     this.memory.setFact("model_target", "<15b-optimized", "harness", 1.0, 64);
+    const artifacts = analyzeArtifactRequirements(task);
+    for (let i = 0; i < artifacts.length; i++) {
+      this.memory.setFact(
+        `required_artifact_${i + 1}`,
+        describeArtifact(artifacts[i]),
+        "task",
+        0.95,
+        32,
+      );
+    }
 
     const clauses = task
       .split(/[.!?\n]/)
@@ -391,7 +479,10 @@ export class AgentEngine {
     });
   }
 
-  private assessResponseReadiness(state: RunState): { ready: boolean; reason: string } {
+  private assessResponseReadiness(state: RunState): {
+    ready: boolean;
+    reason: string;
+  } {
     if (state.policy.mode === "action" && state.toolCallsCount === 0) {
       return {
         ready: false,
@@ -413,6 +504,16 @@ export class AgentEngine {
         ready: false,
         reason:
           "Last observation indicates failure. Resolve it or provide a tool-backed explanation.",
+      };
+    }
+
+    const missing = state.requiredArtifacts.find(
+      (r) => !state.satisfiedArtifacts.has(artifactKey(r)),
+    );
+    if (missing) {
+      return {
+        ready: false,
+        reason: describeMissingArtifactReason(missing),
       };
     }
 
@@ -480,7 +581,9 @@ export class AgentEngine {
 
     lastRaw = fuzzyRaw;
     if (this.settings.debug) {
-      callbacks.onStatus(`Decision raw: ${short(fuzzyRaw.replace(/\s+/g, " "), 220)}`);
+      callbacks.onStatus(
+        `Decision raw: ${short(fuzzyRaw.replace(/\s+/g, " "), 220)}`,
+      );
     }
 
     const fuzzy = parseDecision(fuzzyRaw);
@@ -488,15 +591,23 @@ export class AgentEngine {
       return fuzzy.decision;
     }
 
-    callbacks.onStatus(`Decision parse failed (${fuzzy.error}); retrying with repair.`);
-    const repairRaw = await this.llm.chat([
-      { role: "system", content: buildDecisionRepairPrompt(fuzzy.error, lastRaw) },
-      { role: "user", content: `Task: ${task}` },
-    ], {
-      temperature: 0.0,
-      numCtx: 1024,
-      format: "json",
-    });
+    callbacks.onStatus(
+      `Decision parse failed (${fuzzy.error}); retrying with repair.`,
+    );
+    const repairRaw = await this.llm.chat(
+      [
+        {
+          role: "system",
+          content: buildDecisionRepairPrompt(fuzzy.error, lastRaw),
+        },
+        { role: "user", content: `Task: ${task}` },
+      ],
+      {
+        temperature: 0.0,
+        numCtx: 1024,
+        format: "json",
+      },
+    );
 
     const repaired = parseDecision(repairRaw);
     return repaired.success ? repaired.decision : null;
@@ -509,21 +620,34 @@ export class AgentEngine {
     thought: string,
     callbacks: AgentCallbacks,
   ): Promise<string> {
-    callbacks.onStatus("Thinking Twice (Sentinel Pass)...");
+    callbacks.onStatus("Preflight...");
 
     try {
-      const response = await this.llm.chat([
-        { role: "system", content: buildCritiquePrompt({ task, tool, input, thought }) },
-      ], {
-        temperature: 0.1,
-        numCtx: 1024,
-      });
-      return response.trim();
+      const response = await this.llm.chat(
+        [
+          {
+            role: "system",
+            content: buildCritiquePrompt({ task, tool, input, thought }),
+          },
+        ],
+        {
+          temperature: 0.1,
+          numCtx: 1024,
+        },
+      );
+      const verdict = response.trim();
+      if (verdict === "SAFE") {
+        return "SAFE";
+      }
+      if (verdict.startsWith("ISSUE:")) {
+        return verdict;
+      }
+      return `ISSUE: Invalid Preflight verdict (${short(verdict, 120)}).`;
     } catch (err) {
       if (this.settings.debug) {
         callbacks.onStatus(`Critique failed: ${err}`);
       }
-      return "SAFE";
+      return "ISSUE: Preflight unavailable; cannot safely proceed with code write.";
     }
   }
 
@@ -533,7 +657,10 @@ export class AgentEngine {
     includeLimitWarning: boolean,
   ): Promise<void> {
     const messages: Message[] = [
-      { role: "system", content: buildFinalSystemPrompt({ task, includeLimitWarning }) },
+      {
+        role: "system",
+        content: buildFinalSystemPrompt({ task, includeLimitWarning }),
+      },
       ...this.memory.getMessages(),
       {
         role: "user",
@@ -563,12 +690,18 @@ export class AgentEngine {
       }
     }
 
-    this.memory.addMessage({ role: "assistant", content: fullContent, reasoning: fullReasoning });
+    this.memory.addMessage({
+      role: "assistant",
+      content: fullContent,
+      reasoning: fullReasoning,
+    });
     callbacks.onAssistantDone(fullContent);
   }
 }
 
-type ParseResult = { success: true; decision: AgentDecision } | { success: false; error: string };
+type ParseResult =
+  | { success: true; decision: AgentDecision }
+  | { success: false; error: string };
 
 function parseDecision(raw: string): ParseResult {
   const trimmed = raw.trim();
@@ -610,7 +743,8 @@ function parseDecision(raw: string): ParseResult {
   if (trimmed.includes("{")) {
     return {
       success: false,
-      error: "Output contains JSON but properties are invalid. Ensure 'action' is 'tool' or 'respond'.",
+      error:
+        "Output contains JSON but properties are invalid. Ensure 'action' is 'tool' or 'respond'.",
     };
   }
 
@@ -623,7 +757,7 @@ function tryParseJson(value: string): Record<string, unknown> | null {
     cleaned = cleaned.replace(/,\s*([\}\]])/g, "$1");
     const parsed = JSON.parse(cleaned);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
+      ? (parsed as Record<string, unknown>)
       : null;
   } catch {
     return null;
@@ -651,7 +785,10 @@ function normalizeDecision(raw: Record<string, unknown>): AgentDecision | null {
   };
 }
 
-async function executeTool(tool: { execute(input: string): Promise<string> }, input: string): Promise<string> {
+async function executeTool(
+  tool: { execute(input: string): Promise<string> },
+  input: string,
+): Promise<string> {
   try {
     return await tool.execute(input);
   } catch (error) {
@@ -667,7 +804,11 @@ function short(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}...` : value;
 }
 
-function getFriendlyToolStatus(toolName: string, input: unknown, stepIndex: number): string {
+function getFriendlyToolStatus(
+  toolName: string,
+  input: unknown,
+  stepIndex: number,
+): string {
   const verbs: Record<string, string> = {
     file_reader: "Reading",
     file_writer: "Writing",
@@ -693,7 +834,11 @@ function extractToolTarget(input: unknown): string {
     return "";
   }
   const payload = input as Record<string, unknown>;
-  const candidate = payload.path ?? payload.command ?? payload.name ?? payload.query ?? payload.url;
+  const candidate = payload.path ??
+    payload.command ??
+    payload.name ??
+    payload.query ??
+    payload.url;
   return typeof candidate === "string" ? candidate : "";
 }
 
@@ -705,10 +850,19 @@ function classifyTaskPolicy(task: string): TaskPolicy {
   if (/^\s*(hi|hello|hey|yo|hola)\b/.test(lower)) {
     return { mode: "analysis" };
   }
-  if (/\b(create|write|update|delete|edit|rename|remove|run|execute|fix|implement|refactor|add|change)\b/.test(lower)) {
+  if (
+    /\b(create|write|update|delete|edit|rename|remove|run|execute|fix|implement|refactor|add|change)\b/
+      .test(
+        lower,
+      )
+  ) {
     return { mode: "action" };
   }
-  if (/\b(plan|strategy|analyze|explain|design|compare|review|document)\b/.test(lower)) {
+  if (
+    /\b(plan|strategy|analyze|explain|design|compare|review|document)\b/.test(
+      lower,
+    )
+  ) {
     return { mode: "analysis" };
   }
   return { mode: "analysis" };
@@ -716,19 +870,25 @@ function classifyTaskPolicy(task: string): TaskPolicy {
 
 function looksSuccessfulObservation(observation: string): boolean {
   const lower = observation.toLowerCase();
-  return lower.includes("result: success") ||
+  return (
+    lower.includes("result: success") ||
     lower.includes("exit_code: 0") ||
     lower.includes("completed") ||
-    lower.includes("finished");
+    lower.includes("finished")
+  );
 }
 
 function looksFailureObservation(observation: string): boolean {
   const lower = observation.toLowerCase();
-  return lower.includes("result: failed") ||
+  const hasNonZeroExit = /exit_code:\s*(-?\d+)/i.test(lower) && !/exit_code:\s*0\b/i.test(lower);
+  return (
+    lower.includes("result: failed") ||
     lower.includes("result: timeout") ||
     lower.includes("tool error:") ||
     lower.includes("not found") ||
-    lower.includes("exit_code: -1");
+    lower.includes("exit_code: -1") ||
+    hasNonZeroExit
+  );
 }
 
 function isRecoveryNeeded(observation: string): boolean {
@@ -737,9 +897,7 @@ function isRecoveryNeeded(observation: string): boolean {
 }
 
 function validateToolDecision(toolName: string, input: unknown): string | null {
-  const payload = (input && typeof input === "object")
-    ? input as Record<string, unknown>
-    : {};
+  const payload = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
 
   if (toolName === "shell_command") {
     const command = typeof payload.command === "string" ? payload.command.trim() : "";
@@ -749,6 +907,42 @@ function validateToolDecision(toolName: string, input: unknown): string | null {
     const dangerous = /(rm\s+-rf\s+\/|del\s+\/s\s+\/q\s+c:\\|format\s+[a-z]:|shutdown|reboot)/i;
     if (dangerous.test(command)) {
       return "shell_command contains a destructive command pattern.";
+    }
+    const shellWritePattern =
+      /(>\s*[^>\n]+|>>\s*[^>\n]+|\becho\s+.+\s*>\s*\S+|\bset-content\b|\badd-content\b|\bout-file\b|\btee\b)/i;
+    if (shellWritePattern.test(command)) {
+      return "Use file_writer/file_edit for file content changes instead of shell redirection.";
+    }
+  }
+
+  if (toolName === "file_reader") {
+    const path = typeof payload.path === "string" ? payload.path.trim() : "";
+    if (!path) {
+      return "file_reader requires a 'path'.";
+    }
+  }
+
+  if (toolName === "file_writer") {
+    const path = typeof payload.path === "string" ? payload.path.trim() : "";
+    if (!path) {
+      return "file_writer requires a 'path'.";
+    }
+    if (typeof payload.content !== "string") {
+      return "file_writer requires string 'content'.";
+    }
+  }
+
+  if (toolName === "file_edit") {
+    const path = typeof payload.path === "string" ? payload.path.trim() : "";
+    const find = typeof payload.find === "string" ? payload.find : "";
+    if (!path) {
+      return "file_edit requires a 'path'.";
+    }
+    if (!find) {
+      return "file_edit requires non-empty 'find'.";
+    }
+    if (typeof payload.replace !== "string") {
+      return "file_edit requires string 'replace'.";
     }
   }
 
@@ -790,20 +984,31 @@ function assessDelegationReadiness(
     return { allowed: false, reason: "Task appears simple; do not delegate." };
   }
 
-  const complexPrompt = /\b(complex|massive|large|multi-?step|across|multiple files|end-to-end)\b/.test(lower) ||
-    lower.length >= 160;
+  const complexPrompt =
+    /\b(complex|massive|large|multi-?step|across|multiple files|end-to-end)\b/.test(
+      lower,
+    ) || lower.length >= 160;
   if (!complexPrompt) {
-    return { allowed: false, reason: "Delegation is reserved for clearly complex tasks." };
+    return {
+      allowed: false,
+      reason: "Delegation is reserved for clearly complex tasks.",
+    };
   }
 
   if (iteration < 3 || nonDelegateToolCalls < 1) {
-    return { allowed: false, reason: "Try at least one local tool step before delegating." };
+    return {
+      allowed: false,
+      reason: "Try at least one local tool step before delegating.",
+    };
   }
 
   return { allowed: true, reason: "complex task with local-attempt evidence" };
 }
 
 function isExplicitAgentDirective(lowerTask: string): boolean {
-  return /\b(open|create|start|spawn|launch)\s+(a\s+)?(new\s+)?(sub-?)?agent\b/.test(lowerTask) ||
-    /\bnew\s+agent\b/.test(lowerTask);
+  return (
+    /\b(open|create|start|spawn|launch)\s+(a\s+)?(new\s+)?(sub-?)?agent\b/.test(
+      lowerTask,
+    ) || /\bnew\s+agent\b/.test(lowerTask)
+  );
 }

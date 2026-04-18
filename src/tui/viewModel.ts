@@ -4,6 +4,7 @@ import {
   hr,
   icon,
   splitLines,
+  stripAnsi,
   style,
   visibleLength,
   wrapText,
@@ -93,9 +94,8 @@ export class ViewModel {
   }
 
   addToolActivity(step: number, tool: string, status: "running" | "done" | "error"): void {
-    const existing = this.activeTools.find((t) => t.step === step);
+    const existing = this.activeTools.find((t) => t.step === step && t.tool === tool);
     if (existing) {
-      existing.tool = tool;
       existing.status = status;
     } else {
       this.activeTools.push({ step, tool, status });
@@ -105,7 +105,8 @@ export class ViewModel {
   }
 
   updateToolStatus(step: number, status: "running" | "done" | "error", observation?: string): void {
-    const entry = this.activeTools.find((t) => t.step === step);
+    const entries = this.activeTools.filter((t) => t.step === step);
+    const entry = entries[entries.length - 1];
     if (entry) {
       entry.status = status;
       if (observation) entry.observation = observation;
@@ -248,6 +249,71 @@ export class ViewModel {
     this.emit();
   }
 
+  exportPlainTextTranscript(): string {
+    const blocks: string[] = [];
+    const push = (label: string, text: string) => {
+      const clean = stripAnsi(text).trimEnd();
+      blocks.push(clean ? `${label}\n${clean}` : label);
+    };
+
+    for (const entry of this.log) {
+      switch (entry.kind) {
+        case "user":
+          push("USER", entry.text);
+          break;
+        case "assistant":
+          push("ASSISTANT", entry.text);
+          break;
+        case "thought":
+          push("THOUGHT", entry.text);
+          break;
+        case "tool":
+          push("TOOL", entry.text);
+          break;
+        case "tool-summary": {
+          push("TOOL SUMMARY", entry.text);
+          if (entry.tools?.length) {
+            for (const tool of entry.tools) {
+              const observation = tool.observation ? ` (${tool.observation})` : "";
+              blocks.push(
+                stripAnsi(`- Step ${tool.step}: ${tool.tool} [${tool.status}]${observation}`),
+              );
+            }
+          }
+          break;
+        }
+        case "info":
+          push("INFO", entry.text);
+          break;
+        case "warn":
+          push("WARNING", entry.text);
+          break;
+        case "error":
+          push("ERROR", entry.text);
+          break;
+      }
+    }
+
+    if (this.activeTools.length > 0) {
+      blocks.push("ACTIVE TOOLS");
+      for (const tool of this.activeTools) {
+        const observation = tool.observation ? ` (${tool.observation})` : "";
+        blocks.push(
+          stripAnsi(`- Step ${tool.step}: ${tool.tool} [${tool.status}]${observation}`),
+        );
+      }
+    }
+
+    if (this.reasoningBuffer.trim()) {
+      push("THOUGHT (STREAMING)", this.reasoningBuffer);
+    }
+    if (this.assistantBuffer.trim()) {
+      push("ASSISTANT (STREAMING)", this.assistantBuffer);
+    }
+
+    return blocks.join("\n\n").trim();
+  }
+
   private resetViewport(): void {
     this.viewportOffset = -1;
   }
@@ -320,12 +386,20 @@ export class ViewModel {
     let prevKind: LogEntry["kind"] | null = null;
 
     for (const entry of this.log) {
-      if (shouldSectionBreak(prevKind, entry.kind) && lines.length > 0 && lines[lines.length - 1] !== "") {
+      if (
+        shouldSectionBreak(prevKind, entry.kind) && lines.length > 0 &&
+        lines[lines.length - 1] !== ""
+      ) {
         lines.push("");
       }
       switch (entry.kind) {
         case "user": {
-          this.pushBlock(lines, ` ${style.cyan(icon.user)}  `, formatMarkdown(entry.text), contentWidth);
+          this.pushBlock(
+            lines,
+            ` ${style.cyan(icon.user)}  `,
+            formatMarkdown(entry.text),
+            contentWidth,
+          );
           break;
         }
         case "assistant": {
@@ -354,7 +428,12 @@ export class ViewModel {
               this.pushToolLine(lines, contentWidth, t);
             }
           } else {
-            this.pushBlock(lines, ` ${style.yellow(icon.tool)}  `, style.dim(entry.text), contentWidth);
+            this.pushBlock(
+              lines,
+              ` ${style.yellow(icon.tool)}  `,
+              style.dim(entry.text),
+              contentWidth,
+            );
           }
           break;
         }
@@ -426,7 +505,9 @@ export class ViewModel {
 
   private renderStatusBar(cols: number): string {
     const sep = style.dim(` ${icon.sep} `);
-    const tabVisual = this.tabTotal > 1 ? `${style.dim(`${icon.tab} `)}${this.tabActive + 1}/${this.tabTotal}` : "";
+    const tabVisual = this.tabTotal > 1
+      ? `${style.dim(`${icon.tab} `)}${this.tabActive + 1}/${this.tabTotal}`
+      : "";
     const contextPart = this.statusContext ? style.dim(this.statusContext) : "";
 
     const parts = [

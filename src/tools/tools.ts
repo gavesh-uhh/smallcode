@@ -1,5 +1,6 @@
 import { dirname, isAbsolute, join, normalize, resolve } from "jsr:@std/path";
 import type { Tool } from "../types.ts";
+import { createSimpleDiff } from "../utils/diff.ts";
 
 interface ToolContext {
   rootDir: string;
@@ -32,17 +33,24 @@ function requireString(value: unknown, field: string): string {
   return value;
 }
 
+function contentPreview(content: string, maxChars = 900): string {
+  const normalized = content.replace(/\r\n/g, "\n");
+  return normalized.length > maxChars
+    ? `${normalized.slice(0, maxChars)}\n...[preview truncated]`
+    : normalized;
+}
+
 export class ShellCommandTool implements Tool {
   readonly name = "shell_command";
   readonly description =
-    "Execute shell commands: read files (cat/type), write (echo), list dirs (ls/dir), search (grep/findstr). Platform-aware.";
+    "Execute shell commands for listing, searching, and running programs. Platform-aware.";
   readonly parameters = {
     type: "object",
     properties: {
       command: {
         type: "string",
         description:
-          "Shell command. Unix: 'cat file', 'echo x > file', 'ls -la dir', 'grep -r pattern'. Windows: 'type file', '(echo x) > file', 'dir /s', 'findstr /r pattern'",
+          "Shell command. Unix: 'cat file', 'ls -la dir', 'grep -r pattern'. Windows: 'type file', 'Get-ChildItem', 'findstr /r pattern'",
       },
       cwd: {
         type: "string",
@@ -106,6 +114,165 @@ export class ShellCommandTool implements Tool {
     } finally {
       clearTimeout(timer);
     }
+  }
+}
+
+export class FileReaderTool implements Tool {
+  readonly name = "file_reader";
+  readonly description = "Read a UTF-8 text file from the workspace.";
+  readonly parameters = {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description: "Workspace-relative path to a text file.",
+      },
+    },
+    required: ["path"],
+  };
+
+  constructor(private readonly context: ToolContext) {}
+
+  async execute(input: string): Promise<string> {
+    const payload = JSON.parse(input);
+    const path = requireString(payload.path, "path");
+    const filePath = safePath(this.context.rootDir, path);
+    const content = await Deno.readTextFile(filePath);
+    return [
+      "RESULT: SUCCESS",
+      "EXIT_CODE: 0",
+      `PATH: ${path}`,
+      "OUTPUT:",
+      truncateOutput(content, 12000),
+    ].join("\n");
+  }
+}
+
+export class FileWriterTool implements Tool {
+  readonly name = "file_writer";
+  readonly description = "Create or overwrite a text file in the workspace.";
+  readonly parameters = {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description: "Workspace-relative path to write.",
+      },
+      content: {
+        type: "string",
+        description: "Full text content to write to the file.",
+      },
+    },
+    required: ["path", "content"],
+  };
+
+  constructor(private readonly context: ToolContext) {}
+
+  async execute(input: string): Promise<string> {
+    const payload = JSON.parse(input);
+    const path = requireString(payload.path, "path");
+    const content = requireString(payload.content, "content");
+    const filePath = safePath(this.context.rootDir, path);
+
+    let before = "";
+    let existed = false;
+    try {
+      before = await Deno.readTextFile(filePath);
+      existed = true;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    const diff = createSimpleDiff(before, content);
+    const approved = await this.context.confirmWrite(
+      existed ? `Overwrite ${path}?` : `Create ${path}?`,
+      diff,
+    );
+    if (!approved) {
+      return "RESULT: FAILED\nEXIT_CODE: 1\nOUTPUT:\nWrite cancelled by confirmation policy.";
+    }
+
+    await Deno.mkdir(dirname(filePath), { recursive: true });
+    await Deno.writeTextFile(filePath, content);
+    const preview = contentPreview(content);
+    return [
+      "RESULT: SUCCESS",
+      "EXIT_CODE: 0",
+      "OUTPUT:",
+      existed ? `File overwritten: ${path}` : `File created: ${path}`,
+      "CONTENT_PREVIEW:",
+      preview,
+    ].join("\n");
+  }
+}
+
+export class FileEditTool implements Tool {
+  readonly name = "file_edit";
+  readonly description = "Replace exact text in a workspace file.";
+  readonly parameters = {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description: "Workspace-relative path to edit.",
+      },
+      find: {
+        type: "string",
+        description: "Exact text to find.",
+      },
+      replace: {
+        type: "string",
+        description: "Replacement text.",
+      },
+      replace_all: {
+        type: "boolean",
+        description: "Replace all matches (default false).",
+      },
+    },
+    required: ["path", "find", "replace"],
+  };
+
+  constructor(private readonly context: ToolContext) {}
+
+  async execute(input: string): Promise<string> {
+    const payload = JSON.parse(input);
+    const path = requireString(payload.path, "path");
+    const find = requireString(payload.find, "find");
+    const replace = requireString(payload.replace, "replace");
+    const replaceAll = payload.replace_all === true;
+    const filePath = safePath(this.context.rootDir, path);
+
+    if (!find) {
+      return "RESULT: FAILED\nEXIT_CODE: 1\nOUTPUT:\n'find' must be non-empty.";
+    }
+
+    const before = await Deno.readTextFile(filePath);
+    const occurrences = before.split(find).length - 1;
+    if (occurrences === 0) {
+      return `RESULT: FAILED\nEXIT_CODE: 1\nOUTPUT:\nNo matches found for 'find' in ${path}.`;
+    }
+
+    const after = replaceAll ? before.split(find).join(replace) : before.replace(find, replace);
+    const diff = createSimpleDiff(before, after);
+    const approved = await this.context.confirmWrite(`Edit ${path}?`, diff);
+    if (!approved) {
+      return "RESULT: FAILED\nEXIT_CODE: 1\nOUTPUT:\nEdit cancelled by confirmation policy.";
+    }
+
+    await Deno.writeTextFile(filePath, after);
+    const preview = contentPreview(after);
+    return [
+      "RESULT: SUCCESS",
+      "EXIT_CODE: 0",
+      "OUTPUT:",
+      `Updated ${path} (${replaceAll ? occurrences : 1} replacement${
+        occurrences === 1 ? "" : "s"
+      }).`,
+      "CONTENT_PREVIEW:",
+      preview,
+    ].join("\n");
   }
 }
 

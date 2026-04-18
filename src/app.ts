@@ -1,11 +1,20 @@
 import { AgentEngine } from "./agent/agentEngine.ts";
-import { parseCommand } from "./cli/commands.ts";
+import {
+  COMMAND_USAGE,
+  HELP_COMMANDS,
+  MISSION_COMMANDS,
+  parseCommand,
+  SHORTCUTS,
+} from "./cli/commands.ts";
 import { OllamaClient } from "./llm/ollamaClient.ts";
 import { MemoryManager } from "./memory/memoryManager.ts";
 
 import {
   CodeRunnerTool,
   DelegateTaskTool,
+  FileEditTool,
+  FileReaderTool,
+  FileWriterTool,
   GitTool,
   ShellCommandTool,
 } from "./tools/tools.ts";
@@ -228,6 +237,19 @@ export async function runApp(): Promise<void> {
         updateStatusBar();
         renderer.invalidate();
         return true;
+      case "/export": {
+        if (arg && /[<>:"/\\|?*\x00-\x1f]/.test(arg)) {
+          current.viewModel.addError(COMMAND_USAGE.export);
+          return true;
+        }
+        try {
+          const path = await exportSessionChat(current, arg);
+          current.viewModel.addInfo(`Chat exported: ${path}`);
+        } catch (error) {
+          current.viewModel.addError(`Export failed: ${asMessage(error)}`);
+        }
+        return true;
+      }
       case "/model":
         if (!arg) {
           const models = await llm.listModels();
@@ -241,7 +263,7 @@ export async function runApp(): Promise<void> {
         return true;
       case "/confirm":
         if (arg !== "on" && arg !== "off") {
-          current.viewModel.addError("Usage: /confirm on|off");
+          current.viewModel.addError(COMMAND_USAGE.confirm);
           return true;
         }
         confirmWrites = arg === "on";
@@ -249,7 +271,7 @@ export async function runApp(): Promise<void> {
         return true;
       case "/debug":
         if (arg !== "on" && arg !== "off") {
-          current.viewModel.addError("Usage: /debug on|off");
+          current.viewModel.addError(COMMAND_USAGE.debug);
           return true;
         }
         agentRuntime.debug = arg === "on";
@@ -263,7 +285,7 @@ export async function runApp(): Promise<void> {
         return true;
       case "/plan": {
         if (!arg) {
-          current.viewModel.addError("Usage: /plan <task description>");
+          current.viewModel.addError(COMMAND_USAGE.plan);
           return true;
         }
         current.viewModel.addInfo(style.dim("Deconstructing task into mission steps..."));
@@ -404,7 +426,7 @@ export async function runApp(): Promise<void> {
       }
       case "/run":
         if (!arg) {
-          current.viewModel.addError("Usage: /run <command>");
+          current.viewModel.addError(COMMAND_USAGE.run);
           return true;
         }
         current.viewModel.addInfo(
@@ -417,7 +439,7 @@ export async function runApp(): Promise<void> {
         const [sub, ...subArgs] = arg.split(/\s+/).filter(Boolean);
         const subArgLine = subArgs.join(" ").trim();
         if (!sub) {
-          current.viewModel.addError("Usage: /agent new|list|switch|close ...");
+          current.viewModel.addError(COMMAND_USAGE.agent);
           return true;
         }
         if (sub === "new") {
@@ -432,7 +454,7 @@ export async function runApp(): Promise<void> {
         }
         if (sub === "profile") {
           if (subArgLine !== "small" && subArgLine !== "balanced" && subArgLine !== "ultra") {
-            current.viewModel.addError("Usage: /agent profile small|balanced|ultra");
+            current.viewModel.addError(COMMAND_USAGE.agentProfile);
             return true;
           }
           agentRuntime.profile = subArgLine;
@@ -443,7 +465,7 @@ export async function runApp(): Promise<void> {
         if (sub === "iterations") {
           const value = Number(subArgLine);
           if (!Number.isInteger(value) || value < 1 || value > 24) {
-            current.viewModel.addError("Usage: /agent iterations <1..24>");
+            current.viewModel.addError(COMMAND_USAGE.agentIterations);
             return true;
           }
           agentRuntime.maxIterations = value;
@@ -462,7 +484,7 @@ export async function runApp(): Promise<void> {
         }
         if (sub === "switch") {
           if (!subArgLine) {
-            current.viewModel.addError("Usage: /agent switch <id|index>");
+            current.viewModel.addError(COMMAND_USAGE.agentSwitch);
             return true;
           }
           const tabs = [...sessions.values()];
@@ -498,7 +520,7 @@ export async function runApp(): Promise<void> {
           updateStatusBar();
           return true;
         }
-        current.viewModel.addError("Usage: /agent new|list|switch|close|profile|iterations ...");
+        current.viewModel.addError(COMMAND_USAGE.agentFallback);
         return true;
       }
       default:
@@ -533,58 +555,32 @@ export async function runApp(): Promise<void> {
   }
 
   function showHelp(vm: ViewModel): void {
-    const generalCmds = [
-      ["/help", "Show commands"],
-      ["/exit", "Quit"],
-      ["/clear", "Clear screen"],
-      ["/model [name]", "Show or switch model"],
-      ["/confirm on|off", "Toggle file-write confirmations"],
-      ["/debug on|off", "Toggle agent decision debug"],
-      ["/reset", "Reset active session memory"],
-    ];
-    const toolCmds = [
-      ["/files [path]", "List files via tool layer"],
-      ["/run <command>", "Run shell command via tool layer"],
-    ];
-    const agentCmds = [
-      ["/agent new [name]", "Create session"],
-      ["/agent list", "List sessions"],
-      ["/agent switch <id|n>", "Switch session"],
-      ["/agent close [id]", "Close session (except main)"],
-      ["/agent profile", "Set agent profile (small|balanced)"],
-      ["/agent iterations", "Set iteration cap (1..24)"],
-    ];
-
     vm.addInfo(""); // spacer
 
     vm.addInfo(`  ${style.bold(style.cyan("─── General Commands ───"))}`);
-    for (const [cmd, desc] of generalCmds) {
+    for (const [cmd, desc] of HELP_COMMANDS.general) {
       vm.addInfo(`  ${style.yellow(cmd.padEnd(28))} ${style.dim(desc)}`);
     }
 
     vm.addInfo(`\n  ${style.bold(style.cyan("─── Sub-Tools ───"))}`);
-    for (const [cmd, desc] of toolCmds) {
+    for (const [cmd, desc] of HELP_COMMANDS.tools) {
+      vm.addInfo(`  ${style.yellow(cmd.padEnd(28))} ${style.dim(desc)}`);
+    }
+
+    vm.addInfo(`\n  ${style.bold(style.cyan("─── Agent Sessions ───"))}`);
+    for (const [cmd, desc] of HELP_COMMANDS.agent) {
       vm.addInfo(`  ${style.yellow(cmd.padEnd(28))} ${style.dim(desc)}`);
     }
 
     vm.addInfo(`\n  ${style.bold(style.cyan("─── Multi-Agent ───"))}`);
-    vm.addInfo(
-      `${
-        style.bold("  /plan <task> ")
-      } - Deconstruct a large task into a mission plan (<15B optimized)`,
-    );
-    vm.addInfo(
-      `${style.bold("  /next        ")} - Execute the next step in the active mission plan`,
-    );
-    vm.addInfo(
-      `${style.bold("  /agent       ")} - Manage sessions (new, switch, list, close, profile)`,
-    );
-    vm.addInfo(`${style.bold("  /reset       ")} - Clear session memory and active plans`);
-    vm.addInfo(`  ${style.yellow("Ctrl+E".padEnd(28))} ${style.dim("Switch active tab")}`);
-    vm.addInfo(`  ${style.yellow("Ctrl+C".padEnd(28))} ${style.dim("Quit application")}`);
-    vm.addInfo(`  ${style.yellow("Ctrl+L".padEnd(28))} ${style.dim("Clear entire screen")}`);
-    vm.addInfo(`  ${style.yellow("PgUp / PgDn".padEnd(28))} ${style.dim("Scroll chat history")}`);
-    vm.addInfo(`  ${style.yellow("Up / Down".padEnd(28))} ${style.dim("Browse input history")}`);
+    for (const [cmd, desc] of MISSION_COMMANDS) {
+      vm.addInfo(`  ${style.yellow(cmd.padEnd(28))} ${style.dim(desc)}`);
+    }
+
+    vm.addInfo(`\n  ${style.bold(style.cyan("─── Shortcuts ───"))}`);
+    for (const [cmd, desc] of SHORTCUTS) {
+      vm.addInfo(`  ${style.yellow(cmd.padEnd(28))} ${style.dim(desc)}`);
+    }
     vm.addInfo("");
   }
 
@@ -597,18 +593,19 @@ export async function runApp(): Promise<void> {
     session.viewModel.addUserMessage(task);
     updateStatusBar();
 
-    let currentStep = 0;
+    let planningStep = 0;
+    let lastToolStep = 0;
 
     try {
       await session.agent.run(task, {
         onStatus: (line) => {
           if (line.startsWith("Planning step")) {
             const parts = line.match(/Planning step\s+(\d+)/i);
-            currentStep = parts?.[1] ? Number(parts[1]) : currentStep;
+            planningStep = parts?.[1] ? Number(parts[1]) : planningStep;
             session.viewModel.setStatusBar(
               llm.getModel(),
               session.title,
-              `${currentStep}/${agentRuntime.maxIterations}`,
+              `${planningStep}/${agentRuntime.maxIterations}`,
               "",
               sessions.size,
               Array.from(sessions.keys()).indexOf(session.id),
@@ -616,12 +613,16 @@ export async function runApp(): Promise<void> {
             return;
           }
           if (line.includes(" : ") && line.startsWith("Step ")) {
+            const stepMatch = line.match(/^Step\s+(\d+)\s*:\s*(.+)$/i);
+            if (stepMatch?.[1]) {
+              lastToolStep = Number(stepMatch[1]);
+            }
             const tool = line.split(" : ")[1].split("(")[0].trim();
-            session.viewModel.addToolActivity(currentStep, tool, "running");
+            session.viewModel.addToolActivity(lastToolStep, tool, "running");
             session.viewModel.setStatusBar(
               llm.getModel(),
               session.title,
-              `${currentStep} · ${tool}`,
+              `${lastToolStep} · ${tool}`,
               "",
               sessions.size,
               Array.from(sessions.keys()).indexOf(session.id),
@@ -632,7 +633,7 @@ export async function runApp(): Promise<void> {
             const summary = line.slice("Observation:".length).trim();
             const status = isFailureObservation(summary) ? "error" : "done";
             session.viewModel.updateToolStatus(
-              currentStep,
+              lastToolStep,
               status,
               summarizeObservationForUi(summary, status),
             );
@@ -689,11 +690,16 @@ export async function runApp(): Promise<void> {
 
     const context = {
       rootDir,
-      confirmWrite: async (question: string, diff: string): Promise<boolean> => {
+      confirmWrite: async (question: string, _diff: string): Promise<boolean> => {
         if (!confirmWrites) return true;
-        vm.addInfo(`${question}`);
-        if (diff.trim()) {
-          vm.addInfo(diff.length > 200 ? diff.slice(0, 200) + "…" : diff);
+        if (/^overwrite\s+/i.test(question)) {
+          vm.addInfo("Overwriting file...");
+        } else if (/^create\s+/i.test(question)) {
+          vm.addInfo("Creating file...");
+        } else if (/^edit\s+/i.test(question)) {
+          vm.addInfo("Editing file...");
+        } else {
+          vm.addInfo("Applying file change...");
         }
         return true;
       },
@@ -714,6 +720,9 @@ export async function runApp(): Promise<void> {
     };
 
     toolsContext.register(new ShellCommandTool(context));
+    toolsContext.register(new FileReaderTool(context));
+    toolsContext.register(new FileWriterTool(context));
+    toolsContext.register(new FileEditTool(context));
     toolsContext.register(new CodeRunnerTool(context));
     toolsContext.register(new GitTool(context));
     toolsContext.register(new DelegateTaskTool(context));
@@ -754,10 +763,48 @@ export async function runApp(): Promise<void> {
       session.memory.setMaxHistory(agentRuntime.profile === "ultra" ? 128 : 64);
     }
   }
+
+  async function exportSessionChat(session: AgentSession, customName?: string): Promise<string> {
+    const desktop = getDesktopPath();
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const baseName = customName?.trim()
+      ? ensureTxtExtension(customName.trim())
+      : `smallcode-chat-${sanitizeFileName(session.title)}-${timestamp}.txt`;
+    const filePath = `${desktop}\\${baseName}`;
+
+    const header = [
+      "smallcode chat export",
+      `session: ${session.title} (${session.id})`,
+      `exported_at: ${new Date().toISOString()}`,
+      "",
+    ].join("\n");
+
+    const transcript = session.viewModel.exportPlainTextTranscript();
+    const body = transcript || "(No chat content to export yet.)";
+    await Deno.writeTextFile(filePath, `${header}${body}\n`);
+    return filePath;
+  }
 }
 
 function asMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function getDesktopPath(): string {
+  const home = Deno.env.get("USERPROFILE") ?? Deno.env.get("HOME");
+  if (!home) {
+    throw new Error("Could not resolve home directory for Desktop export.");
+  }
+  return Deno.build.os === "windows" ? `${home}\\Desktop` : `${home}/Desktop`;
+}
+
+function sanitizeFileName(name: string): string {
+  const clean = name.trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, "-").replace(/\s+/g, "_");
+  return clean || "session";
+}
+
+function ensureTxtExtension(fileName: string): string {
+  return fileName.toLowerCase().endsWith(".txt") ? fileName : `${fileName}.txt`;
 }
 
 function isFailureObservation(summary: string): boolean {
