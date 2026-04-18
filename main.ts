@@ -1,3 +1,3 @@
-import { runApp } from "./src/app.ts";
+import { runApp } from "./src/app/runApp.ts";
 
 await runApp();

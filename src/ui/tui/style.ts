@@ -42,8 +42,8 @@ export const icon = {
   file: "",
   sep: "│",
   tab: "󰓩",
-  progFull: "",
-  progEmpty: "",
+  progFull: "",
+  progEmpty: "",
   thought: "󰟶",
 } as const;
 

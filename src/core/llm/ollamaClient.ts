@@ -1,4 +1,5 @@
 import type { ChatChunk, GenerateOptions, Message } from "../types.ts";
+import { OLLAMA_CONFIG } from "../config.ts";
 
 interface OllamaStreamPart {
   done?: boolean;
@@ -14,8 +15,8 @@ interface OllamaStreamPart {
 export class OllamaClient {
   private model: string;
   constructor(
-    private readonly baseUrl = "http://localhost:11434",
-    defaultModel = "qwen2.5:7b",
+    private readonly baseUrl = OLLAMA_CONFIG.baseUrl,
+    defaultModel = OLLAMA_CONFIG.defaultModel,
   ) {
     this.model = defaultModel;
   }
@@ -36,7 +37,7 @@ export class OllamaClient {
     const available = await this.listModels();
     if (available.length === 0) {
       throw new Error(
-        "No local Ollama models found. Pull one first, e.g. `ollama pull qwen2.5:7b`.",
+        `No local Ollama models found. Pull one first, e.g. \`ollama pull ${OLLAMA_CONFIG.defaultModel}\`.`,
       );
     }
     if (available.includes(this.model)) {
@@ -73,8 +74,8 @@ export class OllamaClient {
       stream: true,
       format: options.format,
       options: {
-        temperature: options.temperature ?? 0.2,
-        num_ctx: options.numCtx ?? 4096,
+        temperature: options.temperature ?? OLLAMA_CONFIG.defaultTemperature,
+        num_ctx: options.numCtx ?? OLLAMA_CONFIG.defaultNumCtx,
       },
     };
     const response = await fetch(`${this.baseUrl}/api/generate`, {
@@ -114,8 +115,8 @@ export class OllamaClient {
         stream: false,
         format: options.format,
         options: {
-          temperature: options.temperature ?? 0.2,
-          num_ctx: options.numCtx ?? 4096,
+          temperature: options.temperature ?? OLLAMA_CONFIG.defaultTemperature,
+          num_ctx: options.numCtx ?? OLLAMA_CONFIG.defaultNumCtx,
         },
       }),
     });
@@ -141,8 +142,8 @@ export class OllamaClient {
         stream: true,
         format: options.format,
         options: {
-          temperature: options.temperature ?? 0.2,
-          num_ctx: options.numCtx ?? 4096,
+          temperature: options.temperature ?? OLLAMA_CONFIG.defaultTemperature,
+          num_ctx: options.numCtx ?? OLLAMA_CONFIG.defaultNumCtx,
         },
       }),
     });
@@ -208,7 +209,7 @@ export class OllamaClient {
     const available = await this.listModels();
     if (available.length === 0) {
       throw new Error(
-        "No local Ollama models found. Pull one first, e.g. `ollama pull qwen2.5:7b`.",
+        `No local Ollama models found. Pull one first, e.g. \`ollama pull ${OLLAMA_CONFIG.defaultModel}\`.`,
       );
     }
     if (available.includes(this.model)) {

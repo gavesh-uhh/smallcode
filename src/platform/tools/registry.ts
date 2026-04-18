@@ -1,4 +1,4 @@
-import type { Tool } from "../types.ts";
+import type { Tool } from "../../core/types.ts";
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();

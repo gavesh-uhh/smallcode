@@ -35,12 +35,7 @@ export class Renderer {
     const { cols, rows } = this.getSize();
     this.lastCols = cols;
     this.lastRows = rows;
-    this.write(
-      `${ESC}[?1049h` +
-        `${ESC}[?25l` +
-        `${ESC}[2J` +
-        `${ESC}[H`,
-    );
+    this.write(`${ESC}[?1049h` + `${ESC}[?25l` + `${ESC}[2J` + `${ESC}[H`);
     this.prevFrame = [];
   }
 
@@ -63,9 +58,9 @@ export class Renderer {
         buf.push(`${ESC}[${i + 1};1H`);
         buf.push(`${ESC}[0m`);
         if (lines[i].bg) {
-          buf.push(lines[i].bg!); // apply background color FIRST
+          buf.push(lines[i].bg!);
         }
-        buf.push(`${ESC}[2K`); // clear entire line WITH background
+        buf.push(`${ESC}[2K`);
         buf.push(lines[i].text);
         buf.push(`${ESC}[0m`);
       }
@@ -119,11 +114,7 @@ export class Renderer {
   destroy(): void {
     if (!this.started) return;
     this.started = false;
-    this.write(
-      `${ESC}[0m` +
-        `${ESC}[?25h` +
-        `${ESC}[?1049l`,
-    );
+    this.write(`${ESC}[0m` + `${ESC}[?25h` + `${ESC}[?1049l`);
     this.prevFrame = [];
   }
 }

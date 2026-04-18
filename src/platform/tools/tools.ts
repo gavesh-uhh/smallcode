@@ -1,6 +1,6 @@
 import { dirname, isAbsolute, join, normalize, resolve } from "jsr:@std/path";
-import type { Tool } from "../types.ts";
-import { createSimpleDiff } from "../utils/diff.ts";
+import type { Tool } from "../../core/types.ts";
+import { createSimpleDiff } from "../../shared/diff.ts";
 
 interface ToolContext {
   rootDir: string;

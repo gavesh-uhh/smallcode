@@ -1,7 +1,8 @@
 import type { AgentDecision, Message } from "../types.ts";
 import type { OllamaClient } from "../llm/ollamaClient.ts";
-import type { ToolRegistry } from "../tools/registry.ts";
+import type { ToolRegistry } from "../../platform/tools/registry.ts";
 import type { MemoryManager } from "../memory/memoryManager.ts";
+import { AGENT_CONFIG } from "../config.ts";
 import {
   type AgentProfile,
   buildCritiquePrompt,
@@ -72,12 +73,14 @@ export class AgentEngine {
     options: Partial<AgentOptions> = {},
   ) {
     this.settings = {
-      maxIterations: options.maxIterations ?? 8,
-      profile: options.profile ?? "small",
-      debug: options.debug ?? false,
-      decisionTemperature: options.decisionTemperature ?? 0.0,
+      maxIterations: options.maxIterations ?? AGENT_CONFIG.defaultMaxIterations,
+      profile: options.profile ?? AGENT_CONFIG.defaultProfile,
+      debug: options.debug ?? AGENT_CONFIG.defaultDebug,
+      decisionTemperature: options.decisionTemperature ?? AGENT_CONFIG.decision.temperature,
       decisionCtx: options.decisionCtx ??
-        (options.profile === "ultra" ? 32768 : options.profile === "balanced" ? 8192 : 4096),
+        AGENT_CONFIG.decision.ctxByProfile[
+          options.profile ?? AGENT_CONFIG.defaultProfile
+        ],
     };
   }
 
@@ -126,7 +129,7 @@ export class AgentEngine {
   async generatePlan(task: string): Promise<string[]> {
     const prompt = buildPlannerPrompt(task);
     const raw = await this.llm.chat([{ role: "user", content: prompt }], {
-      temperature: 0.1,
+      temperature: AGENT_CONFIG.planning.temperature,
       format: "json",
     });
 
@@ -151,7 +154,7 @@ export class AgentEngine {
     const scratchpad = this.memory.getScratchpadText(10);
     const prompt = buildStepSummaryPrompt(task, scratchpad);
     const summary = await this.llm.chat([{ role: "user", content: prompt }], {
-      temperature: 0.0,
+      temperature: AGENT_CONFIG.summarize.temperature,
     });
     return summary.trim();
   }
@@ -160,8 +163,8 @@ export class AgentEngine {
     const history = this.memory.getScratchpadText(15);
     const prompt = buildVerifySuccessPrompt(task, history);
     const result = await this.llm.chat([{ role: "user", content: prompt }], {
-      temperature: 0.0,
-      numCtx: 2048,
+      temperature: AGENT_CONFIG.verify.temperature,
+      numCtx: AGENT_CONFIG.verify.numCtx,
     });
     return result.trim().toUpperCase() === "YES";
   }
@@ -603,8 +606,8 @@ export class AgentEngine {
         { role: "user", content: `Task: ${task}` },
       ],
       {
-        temperature: 0.0,
-        numCtx: 1024,
+        temperature: AGENT_CONFIG.decision.repairTemperature,
+        numCtx: AGENT_CONFIG.decision.repairNumCtx,
         format: "json",
       },
     );
@@ -631,8 +634,8 @@ export class AgentEngine {
           },
         ],
         {
-          temperature: 0.1,
-          numCtx: 1024,
+          temperature: AGENT_CONFIG.preflight.temperature,
+          numCtx: AGENT_CONFIG.preflight.numCtx,
         },
       );
       const verdict = response.trim();
@@ -677,7 +680,7 @@ export class AgentEngine {
 
     for await (
       const chunk of this.llm.chatStream(messages, {
-        temperature: 0.2,
+        temperature: AGENT_CONFIG.final.temperature,
         numCtx: this.settings.decisionCtx,
       })
     ) {
