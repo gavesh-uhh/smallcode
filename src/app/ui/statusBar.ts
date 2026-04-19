@@ -12,10 +12,8 @@ export function updateStatusBarView({ llm, session, sessions, activeSessionId }:
   if (!session) return;
 
   const stats = session.agent.getContextStats();
-  const tokenEst = stats.chars > 1000
-    ? `${(stats.chars / 4000).toFixed(1)}k`
-    : `${Math.round(stats.chars / 4)}`;
-  const ctxText = `${stats.messages}/${stats.max} · ${tokenEst}`;
+  const tokenEst = Math.round(stats.chars / 4);
+  const ctxText = `${formatK(tokenEst)} ctx`;
 
   session.viewModel.setStatusBar(
     llm.getModel(),
@@ -25,4 +23,11 @@ export function updateStatusBarView({ llm, session, sessions, activeSessionId }:
     sessions.size,
     Array.from(sessions.keys()).indexOf(activeSessionId),
   );
+}
+
+function formatK(value: number): string {
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(1)}k`;
+  }
+  return `${value}`;
 }

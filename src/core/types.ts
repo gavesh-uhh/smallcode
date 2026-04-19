@@ -18,6 +18,8 @@ export interface GenerateOptions {
   temperature?: number;
   numCtx?: number;
   format?: "json";
+  think?: boolean;
+  keepAlive?: string | number;
 }
 
 export interface Tool {

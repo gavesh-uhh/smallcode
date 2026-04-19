@@ -10,9 +10,12 @@ import type { AgentSession } from "./types.ts";
 export async function runApp(): Promise<void> {
   const context = createAppContext(Deno.cwd());
   let resizeTimer: number | undefined;
+  let thinkingTimer: number | undefined;
 
   let redraw = () => {};
-  let runAgentTaskRef: ((session: AgentSession, task: string) => Promise<void>) | null = null;
+  let runAgentTaskRef:
+    | ((session: AgentSession, task: string) => Promise<void>)
+    | null = null;
 
   const updateStatusBar = (): void => {
     updateStatusBarView({
@@ -64,6 +67,9 @@ export async function runApp(): Promise<void> {
     if (resizeTimer !== undefined) {
       clearInterval(resizeTimer);
     }
+    if (thinkingTimer !== undefined) {
+      clearInterval(thinkingTimer);
+    }
     context.input.stop();
     context.renderer.destroy();
   }
@@ -100,16 +106,27 @@ export async function runApp(): Promise<void> {
     }
   }, 500);
 
+  thinkingTimer = setInterval(() => {
+    const currentSession = sessionManager.getCurrentSession();
+    if (!currentSession || !currentSession.viewModel.isStreaming) {
+      return;
+    }
+    currentSession.viewModel.advanceThinkingSpinner();
+  }, 120);
+
   try {
     const modelStatus = await context.llm.ensureModelAvailable();
     const current = sessionManager.getCurrentSession();
     if (current && modelStatus.changed) {
-      current.viewModel.addInfo(`Model not found locally. Using ${modelStatus.model}`);
+      current.viewModel.addInfo(
+        `Model not found locally. Using ${modelStatus.model}`,
+      );
     }
     updateStatusBar();
   } catch (error) {
     const current = sessionManager.getCurrentSession();
-    if (current) current.viewModel.addWarning(`Model setup: ${asMessage(error)}`);
+    if (current)
+      current.viewModel.addWarning(`Model setup: ${asMessage(error)}`);
     updateStatusBar();
   }
 

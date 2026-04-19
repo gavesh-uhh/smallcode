@@ -34,7 +34,7 @@ export const icon = {
   gear: "",
   working: "⟳",
   model: "󰧑",
-  session: "",
+  session: "󰥛",
   warn: "",
   error: "",
   info: "",

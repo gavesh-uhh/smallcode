@@ -21,7 +21,15 @@ interface ToolEntry {
 }
 
 interface LogEntry {
-  kind: "user" | "assistant" | "thought" | "tool" | "info" | "warn" | "error" | "tool-summary";
+  kind:
+    | "user"
+    | "assistant"
+    | "thought"
+    | "tool"
+    | "info"
+    | "warn"
+    | "error"
+    | "tool-summary";
   text: string;
   tools?: ToolEntry[];
 }
@@ -42,11 +50,27 @@ type ChangeCallback = () => void;
  * - Viewport offset for scrolling
  */
 export class ViewModel {
+  private static readonly THINKING_SPINNER_FRAMES = [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+  ];
+
   private log: LogEntry[] = [];
   private activeTools: ToolEntry[] = [];
   private assistantBuffer = "";
   private reasoningBuffer = "";
   private streaming = false;
+  private thinkingSpinnerFrame = 0;
   private statusModel = "loading...";
   private statusSession = "main";
   private statusState = "idle";
@@ -61,6 +85,7 @@ export class ViewModel {
   private cachedDocLines: string[] = [];
   private docLinesDirty = true;
   private lastBuildCols = 0;
+  private lastViewportHeight = 1;
 
   private emitPending = false;
 
@@ -93,8 +118,14 @@ export class ViewModel {
     this.emit();
   }
 
-  addToolActivity(step: number, tool: string, status: "running" | "done" | "error"): void {
-    const existing = this.activeTools.find((t) => t.step === step && t.tool === tool);
+  addToolActivity(
+    step: number,
+    tool: string,
+    status: "running" | "done" | "error",
+  ): void {
+    const existing = this.activeTools.find(
+      (t) => t.step === step && t.tool === tool,
+    );
     if (existing) {
       existing.status = status;
     } else {
@@ -104,7 +135,11 @@ export class ViewModel {
     this.emit();
   }
 
-  updateToolStatus(step: number, status: "running" | "done" | "error", observation?: string): void {
+  updateToolStatus(
+    step: number,
+    status: "running" | "done" | "error",
+    observation?: string,
+  ): void {
     const entries = this.activeTools.filter((t) => t.step === step);
     const entry = entries[entries.length - 1];
     if (entry) {
@@ -118,13 +153,19 @@ export class ViewModel {
   startAssistantStream(): void {
     if (this.activeTools.length > 0) {
       const count = this.activeTools.length;
-      const summary = count === 1
-        ? `1 tool ran: ${this.activeTools[0].tool}`
-        : `${count} tools ran`;
-      this.log.push({ kind: "tool-summary", text: summary, tools: [...this.activeTools] });
+      const summary =
+        count === 1
+          ? `1 tool ran: ${this.activeTools[0].tool}`
+          : `${count} tools ran`;
+      this.log.push({
+        kind: "tool-summary",
+        text: summary,
+        tools: [...this.activeTools],
+      });
       this.activeTools = [];
     }
     this.streaming = true;
+    this.thinkingSpinnerFrame = 0;
     this.assistantBuffer = "";
     this.reasoningBuffer = "";
     this.markDirty();
@@ -153,8 +194,17 @@ export class ViewModel {
     this.assistantBuffer = "";
     this.reasoningBuffer = "";
     this.streaming = false;
+    this.thinkingSpinnerFrame = 0;
     this.markDirty();
     this.resetViewport();
+    this.emit();
+  }
+
+  advanceThinkingSpinner(): void {
+    if (!this.streaming) return;
+    this.thinkingSpinnerFrame =
+      (this.thinkingSpinnerFrame + 1) %
+      ViewModel.THINKING_SPINNER_FRAMES.length;
     this.emit();
   }
 
@@ -199,10 +249,11 @@ export class ViewModel {
       const current = Math.min(Number(progMatch[1]), Number(progMatch[2]));
       const max = Number(progMatch[2]);
       const full = Array(current).fill(icon.progFull).join(" ");
-      const empty = Array(Math.max(0, max - current)).fill(icon.progEmpty).join(" ");
+      const empty = Array(Math.max(0, max - current))
+        .fill(icon.progEmpty)
+        .join(" ");
       this.statusState = `${style.green(full)}${full && empty ? " " : ""}${style.dim(empty)}`;
     } else {
-      // Check if it's "step 1 · tool"
       const toolMatch = state.match(/^(\d+) \· (.+)$/);
       if (toolMatch) {
         this.statusState = `${style.cyan(`${icon.progFull} `)} ${style.dim(toolMatch[2])}`;
@@ -222,8 +273,9 @@ export class ViewModel {
 
   scrollUp(amount: number): void {
     const total = this.cachedDocLines.length;
+    const maxStart = Math.max(0, total - this.lastViewportHeight);
     if (this.viewportOffset === -1) {
-      this.viewportOffset = Math.max(0, total - amount);
+      this.viewportOffset = Math.max(0, maxStart - amount);
     } else {
       this.viewportOffset = Math.max(0, this.viewportOffset - amount);
     }
@@ -232,10 +284,22 @@ export class ViewModel {
 
   scrollDown(amount: number): void {
     if (this.viewportOffset === -1) return;
+    const total = this.cachedDocLines.length;
+    const maxStart = Math.max(0, total - this.lastViewportHeight);
     this.viewportOffset = this.viewportOffset + amount;
-    if (this.viewportOffset >= this.cachedDocLines.length) {
+    if (this.viewportOffset >= maxStart) {
       this.viewportOffset = -1;
     }
+    this.emit();
+  }
+
+  scrollToTop(): void {
+    this.viewportOffset = 0;
+    this.emit();
+  }
+
+  scrollToBottom(): void {
+    this.viewportOffset = -1;
     this.emit();
   }
 
@@ -274,9 +338,13 @@ export class ViewModel {
           push("TOOL SUMMARY", entry.text);
           if (entry.tools?.length) {
             for (const tool of entry.tools) {
-              const observation = tool.observation ? ` (${tool.observation})` : "";
+              const observation = tool.observation
+                ? ` (${tool.observation})`
+                : "";
               blocks.push(
-                stripAnsi(`- Step ${tool.step}: ${tool.tool} [${tool.status}]${observation}`),
+                stripAnsi(
+                  `- Step ${tool.step}: ${tool.tool} [${tool.status}]${observation}`,
+                ),
               );
             }
           }
@@ -299,7 +367,9 @@ export class ViewModel {
       for (const tool of this.activeTools) {
         const observation = tool.observation ? ` (${tool.observation})` : "";
         blocks.push(
-          stripAnsi(`- Step ${tool.step}: ${tool.tool} [${tool.status}]${observation}`),
+          stripAnsi(
+            `- Step ${tool.step}: ${tool.tool} [${tool.status}]${observation}`,
+          ),
         );
       }
     }
@@ -321,10 +391,7 @@ export class ViewModel {
   private markDirty(): void {
     this.docLinesDirty = true;
   }
-  computeFrame(
-    cols: number,
-    rows: number,
-  ): { lines: FrameLine[] } {
+  computeFrame(cols: number, rows: number): { lines: FrameLine[] } {
     // Layout:
     // Row 0:      Status bar (bgGray)
     // Row 1:      Top separator
@@ -333,6 +400,7 @@ export class ViewModel {
     // Row N-2:    Input line (bgDark)
     // Row N-1:    EMPTY (Windows Console safety boundary for stdin reading)
     const viewportHeight = Math.max(1, rows - 5);
+    this.lastViewportHeight = viewportHeight;
 
     const statusLine = this.renderStatusBar(cols);
     const topSep = hr(cols);
@@ -350,7 +418,10 @@ export class ViewModel {
     if (this.viewportOffset === -1) {
       start = Math.max(0, totalDoc - viewportHeight);
     } else {
-      start = Math.min(this.viewportOffset, Math.max(0, totalDoc - viewportHeight));
+      start = Math.min(
+        this.viewportOffset,
+        Math.max(0, totalDoc - viewportHeight),
+      );
     }
     const visible = docLines.slice(start, start + viewportHeight);
 
@@ -358,9 +429,21 @@ export class ViewModel {
       visible.push("");
     }
 
-    const bottomSep = this.renderBottomSeparator(cols, totalDoc, viewportHeight, start);
+    const bottomSep = this.renderBottomSeparator(
+      cols,
+      totalDoc,
+      viewportHeight,
+      start,
+    );
 
-    const frame: string[] = [statusLine, topSep, ...visible, bottomSep, inputLine, ""];
+    const frame: string[] = [
+      statusLine,
+      topSep,
+      ...visible,
+      bottomSep,
+      inputLine,
+      "",
+    ];
 
     while (frame.length < rows) {
       frame.splice(frame.length - 3, 0, "");
@@ -387,7 +470,8 @@ export class ViewModel {
 
     for (const entry of this.log) {
       if (
-        shouldSectionBreak(prevKind, entry.kind) && lines.length > 0 &&
+        shouldSectionBreak(prevKind, entry.kind) &&
+        lines.length > 0 &&
         lines[lines.length - 1] !== ""
       ) {
         lines.push("");
@@ -415,7 +499,7 @@ export class ViewModel {
           this.pushBlock(
             lines,
             ` ${style.magenta(icon.thought)}  `,
-            entry.text,
+            normalizeThoughtText(entry.text),
             contentWidth,
             (s) => style.italic(style.dim(s)),
           );
@@ -438,7 +522,12 @@ export class ViewModel {
           break;
         }
         case "info": {
-          this.pushBlock(lines, ` ${style.blue(icon.info)}  `, entry.text, contentWidth);
+          this.pushBlock(
+            lines,
+            ` ${style.blue(icon.info)}  `,
+            entry.text,
+            contentWidth,
+          );
           break;
         }
         case "warn": {
@@ -466,9 +555,6 @@ export class ViewModel {
     }
 
     if (this.activeTools.length > 0) {
-      if (lines.length > 0 && lines[lines.length - 1] !== "") {
-        lines.push("");
-      }
       lines.push(style.dim(` ${icon.tool}  active tools`));
       for (const t of this.activeTools) {
         this.pushToolLine(lines, contentWidth, t);
@@ -477,14 +563,11 @@ export class ViewModel {
     }
 
     if (this.streaming) {
-      if (lines.length > 0 && lines[lines.length - 1] !== "") {
-        lines.push("");
-      }
       if (this.reasoningBuffer) {
         this.pushBlock(
           lines,
           ` ${style.magenta(icon.thought)}  `,
-          `${this.reasoningBuffer}▌`,
+          `${normalizeThoughtText(this.reasoningBuffer)}▌`,
           contentWidth,
           (s) => style.italic(style.dim(s)),
         );
@@ -505,21 +588,48 @@ export class ViewModel {
 
   private renderStatusBar(cols: number): string {
     const sep = style.dim(` ${icon.sep} `);
-    const tabVisual = this.tabTotal > 1
-      ? `${style.dim(`${icon.tab} `)}${this.tabActive + 1}/${this.tabTotal}`
+    const tabVisualRaw =
+      this.tabTotal > 1
+        ? `${style.dim(`${icon.tab} `)}${this.tabActive + 1}/${this.tabTotal}`
+        : "";
+    const contextRaw = this.statusContext ? style.dim(this.statusContext) : "";
+
+    const thinkingLabel = this.assistantBuffer ? `Answering` : `Thinking`;
+
+    const thinkingRaw = this.streaming
+      ? style.magenta(
+          `${ViewModel.THINKING_SPINNER_FRAMES[this.thinkingSpinnerFrame]} ${thinkingLabel}`,
+        )
       : "";
-    const contextPart = this.statusContext ? style.dim(this.statusContext) : "";
 
     const parts = [
-      style.bold(" smallcode "),
-      `${style.dim(`${icon.model} `)}${this.statusModel}`,
-      `${style.dim(`${icon.session} `)}${this.statusSession}`,
-      tabVisual,
-      contextPart,
-      this.statusState,
-    ].filter(Boolean);
+      { key: "app", text: style.bold(" smallcode ") },
+      { key: "model", text: `${this.statusModel}` },
+      {
+        key: "session",
+        text: `${style.dim(`${icon.session} `)}${this.statusSession}`,
+      },
+      { key: "tab", text: tabVisualRaw },
+      { key: "context", text: contextRaw },
+      { key: "state", text: this.statusState },
+      { key: "thinking", text: thinkingRaw },
+    ].filter((p) => Boolean(p.text));
 
-    return fitToWidth(parts.join(sep), cols);
+    const dropOrder = ["context", "tab", "model"] as const;
+    while (
+      visibleLength(parts.map((p) => p.text).join(sep)) > cols &&
+      dropOrder.some((k) => parts.some((p) => p.key === k))
+    ) {
+      for (const key of dropOrder) {
+        const idx = parts.findIndex((p) => p.key === key);
+        if (idx >= 0) {
+          parts.splice(idx, 1);
+          break;
+        }
+      }
+    }
+
+    return fitToWidth(parts.map((p) => p.text).join(sep), cols);
   }
 
   private renderBottomSeparator(
@@ -531,7 +641,8 @@ export class ViewModel {
     const overflow = totalDoc > viewportHeight;
     if (!overflow) return hr(cols);
 
-    const atBottom = this.viewportOffset === -1 || (start + viewportHeight >= totalDoc);
+    const atBottom =
+      this.viewportOffset === -1 || start + viewportHeight >= totalDoc;
     const linesAbove = start;
     const linesBelow = Math.max(0, totalDoc - start - viewportHeight);
 
@@ -549,8 +660,11 @@ export class ViewModel {
     const indLen = visibleLength(indicator);
     const dashLeft = Math.max(2, Math.floor((cols - indLen) / 2));
     const dashRight = Math.max(2, cols - dashLeft - indLen);
-    return style.dim("─".repeat(dashLeft)) + style.dim(indicator) +
-      style.dim("─".repeat(dashRight));
+    return (
+      style.dim("─".repeat(dashLeft)) +
+      style.dim(indicator) +
+      style.dim("─".repeat(dashRight))
+    );
   }
 
   private getInputPrefix(): string {
@@ -563,7 +677,9 @@ export class ViewModel {
     const maxInput = Math.max(4, cols - prefixLen - 2);
 
     if (this.inputBuffer.length === 0) {
-      return prefix + style.inverse(" ") + style.dim("Type a message or /help...");
+      return (
+        prefix + style.inverse(" ") + style.dim("Type a message or /help...")
+      );
     }
 
     const window = this.projectInputWindow(maxInput);
@@ -575,13 +691,21 @@ export class ViewModel {
     return prefix + before + style.inverse(activeChar) + after;
   }
 
-  private pushToolLine(lines: string[], contentWidth: number, t: ToolEntry): void {
-    const statusIcon = t.status === "running"
-      ? style.yellow(icon.spinner)
-      : t.status === "done"
-      ? style.green(icon.check)
-      : style.red(icon.cross);
-    const base = `${style.dim(`#${t.step}`)} ${style.dim("·")} ${t.tool} ${statusIcon}`;
+  private pushToolLine(
+    lines: string[],
+    contentWidth: number,
+    t: ToolEntry,
+  ): void {
+    const statusIcon =
+      t.status === "running"
+        ? style.yellow(icon.spinner)
+        : t.status === "done"
+          ? style.green(icon.check)
+          : style.red(icon.cross);
+    const observation = t.observation
+      ? ` ${style.dim("·")} ${style.dim(compactObservation(t.observation))}`
+      : "";
+    const base = `${style.dim(`#${t.step}`)} ${style.dim("·")} ${t.tool} ${statusIcon}${observation}`;
     this.pushBlock(lines, ` ${style.yellow(icon.tool)}  `, base, contentWidth);
   }
 
@@ -608,7 +732,10 @@ export class ViewModel {
     }
   }
 
-  private projectInputWindow(maxInput: number): { text: string; cursor: number } {
+  private projectInputWindow(maxInput: number): {
+    text: string;
+    cursor: number;
+  } {
     const raw = this.inputBuffer;
     if (raw.length <= maxInput) {
       return { text: raw, cursor: this.inputCursor };
@@ -639,9 +766,34 @@ export class ViewModel {
   }
 }
 
-function shouldSectionBreak(prev: LogEntry["kind"] | null, next: LogEntry["kind"]): boolean {
+function shouldSectionBreak(
+  prev: LogEntry["kind"] | null,
+  next: LogEntry["kind"],
+): boolean {
   if (!prev) return false;
-  const heavy = new Set<LogEntry["kind"]>(["user", "assistant", "thought"]);
-  if (heavy.has(prev) || heavy.has(next)) return true;
-  return prev !== next;
+
+  // Keep one conversational block as:
+  // user -> (optional thought) -> assistant
+  if (prev === "user" && (next === "thought" || next === "assistant"))
+    return false;
+  if (prev === "thought" && next === "assistant") return false;
+
+  // Start a new visual section on each new user question.
+  if (next === "user") return true;
+
+  return false;
+}
+
+function normalizeThoughtText(value: string): string {
+  const lines = splitLines(value);
+  return lines
+    .map((line) => line.trimStart())
+    .join("\n")
+    .trimStart();
+}
+
+function compactObservation(value: string): string {
+  const oneLine = stripAnsi(value).replace(/\s+/g, " ").trim();
+  if (oneLine.length <= 56) return oneLine;
+  return `${oneLine.slice(0, 56)}...`;
 }

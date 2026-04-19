@@ -14,6 +14,7 @@ type DecisionPromptArgs = {
 type FinalPromptArgs = {
   task: string;
   includeLimitWarning: boolean;
+  mode: "action" | "analysis";
 };
 
 export const SCHEMA_DEFINITION = [
@@ -184,12 +185,21 @@ export function buildFinalSystemPrompt(args: FinalPromptArgs): string {
   const warning = args.includeLimitWarning
     ? "If incomplete, list what remains."
     : "Respond with a concise final answer.";
+  const evidencePolicy = args.mode === "action"
+    ? [
+      "Only state outcomes supported by tool observations in context.",
+      "If evidence is partial, say what is confirmed and what is not.",
+      "If a tool observation includes CONTENT_PREVIEW, treat it as canonical and do not invent a different snippet.",
+      "When user asks for code that was written, quote or summarize the canonical CONTENT_PREVIEW instead of generating a new variant.",
+    ]
+    : [
+      "For general questions, answer using standard model knowledge without requiring tool observations.",
+      "If tools were used, prefer those observations when they directly apply.",
+      "Do not claim you executed tools when you did not.",
+    ];
   return [
     "You are a terminal coding assistant.",
-    "Only state outcomes supported by tool observations in context.",
-    "If a tool observation includes CONTENT_PREVIEW, treat it as canonical and do not invent a different snippet.",
-    "When user asks for code that was written, quote or summarize the canonical CONTENT_PREVIEW instead of generating a new variant.",
-    "If evidence is partial, say what is confirmed and what is not.",
+    ...evidencePolicy,
     warning,
     `Original task: ${args.task}`,
   ].join("\n");

@@ -4,10 +4,13 @@ import { OLLAMA_CONFIG } from "../config.ts";
 interface OllamaStreamPart {
   done?: boolean;
   response?: string;
+  thinking?: string;
+  reasoning_content?: string;
   message?: {
     role: string;
     content: string;
     reasoning_content?: string;
+    thinking?: string;
   };
   error?: string;
 }
@@ -72,6 +75,8 @@ export class OllamaClient {
       prompt,
       system: options.system,
       stream: true,
+      think: options.think ?? true,
+      keep_alive: options.keepAlive ?? OLLAMA_CONFIG.defaultKeepAlive,
       format: options.format,
       options: {
         temperature: options.temperature ?? OLLAMA_CONFIG.defaultTemperature,
@@ -113,6 +118,8 @@ export class OllamaClient {
         model,
         messages,
         stream: false,
+        think: options.think ?? true,
+        keep_alive: options.keepAlive ?? OLLAMA_CONFIG.defaultKeepAlive,
         format: options.format,
         options: {
           temperature: options.temperature ?? OLLAMA_CONFIG.defaultTemperature,
@@ -140,6 +147,8 @@ export class OllamaClient {
         model,
         messages,
         stream: true,
+        think: options.think ?? true,
+        keep_alive: options.keepAlive ?? OLLAMA_CONFIG.defaultKeepAlive,
         format: options.format,
         options: {
           temperature: options.temperature ?? OLLAMA_CONFIG.defaultTemperature,
@@ -152,17 +161,73 @@ export class OllamaClient {
       throw new Error(`Ollama chat stream failed: ${response.status} ${text}`);
     }
 
+    let inThinkTag = false;
+    let contentCarry = "";
+
     for await (const part of this.streamNdjson(response.body)) {
       if (part.error) {
         throw new Error(part.error);
       }
-      if (part.message?.reasoning_content) {
-        yield { type: "reasoning", text: part.message.reasoning_content };
+
+      const reasoningChunk = part.message?.thinking ??
+        part.message?.reasoning_content ??
+        part.thinking ??
+        part.reasoning_content;
+      if (reasoningChunk) {
+        yield { type: "reasoning", text: reasoningChunk };
       }
-      if (part.message?.content) {
-        yield { type: "content", text: part.message.content };
+
+      const chunkContent = part.message?.content ?? "";
+      if (chunkContent) {
+        contentCarry += chunkContent;
+
+        while (contentCarry.length > 0) {
+          if (inThinkTag) {
+            const closeIdx = contentCarry.toLowerCase().indexOf("</think>");
+            if (closeIdx >= 0) {
+              const reasoningText = contentCarry.slice(0, closeIdx);
+              if (reasoningText) {
+                yield { type: "reasoning", text: reasoningText };
+              }
+              contentCarry = contentCarry.slice(closeIdx + "</think>".length);
+              inThinkTag = false;
+              continue;
+            }
+
+            const keepTail = Math.max(0, contentCarry.length - 7);
+            const reasoningText = contentCarry.slice(0, keepTail);
+            if (reasoningText) {
+              yield { type: "reasoning", text: reasoningText };
+            }
+            contentCarry = contentCarry.slice(keepTail);
+            break;
+          }
+
+          const openIdx = contentCarry.toLowerCase().indexOf("<think>");
+          if (openIdx >= 0) {
+            const assistantText = contentCarry.slice(0, openIdx);
+            if (assistantText) {
+              yield { type: "content", text: assistantText };
+            }
+            contentCarry = contentCarry.slice(openIdx + "<think>".length);
+            inThinkTag = true;
+            continue;
+          }
+
+          const keepTail = Math.max(0, contentCarry.length - 6);
+          const assistantText = contentCarry.slice(0, keepTail);
+          if (assistantText) {
+            yield { type: "content", text: assistantText };
+          }
+          contentCarry = contentCarry.slice(keepTail);
+          break;
+        }
       }
       if (part.done) {
+        if (contentCarry) {
+          yield { type: inThinkTag ? "reasoning" : "content", text: contentCarry };
+          contentCarry = "";
+        }
         break;
       }
     }

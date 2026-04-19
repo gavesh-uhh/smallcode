@@ -31,10 +31,11 @@ export const HELP_COMMANDS = {
 } as const;
 
 export const SHORTCUTS = [
-  ["Ctrl+E", "Switch active tab"],
+  ["Ctrl+E / Ctrl+R", "Switch tab (next / previous)"],
   ["Ctrl+C", "Quit application"],
   ["Ctrl+L", "Clear entire screen"],
   ["PgUp / PgDn", "Scroll chat history"],
+  ["Ctrl+B / Ctrl+N", "Jump to top / bottom"],
   ["Up / Down", "Browse input history"],
 ] as const satisfies readonly HelpRow[];
 

@@ -2,9 +2,10 @@ import type { AgentProfile } from "./agent/prompts.ts";
 
 export const OLLAMA_CONFIG = {
   baseUrl: "http://localhost:11434",
-  defaultModel: "qwen2.5:7b",
+  defaultModel: "gemma4:latest",
   defaultTemperature: 0.2,
   defaultNumCtx: 4096,
+  defaultKeepAlive: "30m",
 } as const;
 
 export const AGENT_CONFIG = {

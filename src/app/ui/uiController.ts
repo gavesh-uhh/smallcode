@@ -52,6 +52,15 @@ export function createUiController(deps: UiControllerDeps) {
         return;
       }
 
+      if (key.ctrl && key.name === "r") {
+        const sessionKeys = Array.from(deps.sessions.keys());
+        if (sessionKeys.length <= 1) return;
+        const idx = sessionKeys.indexOf(deps.getActiveSessionId());
+        const prevIdx = (idx - 1 + sessionKeys.length) % sessionKeys.length;
+        deps.switchSession(sessionKeys[prevIdx]);
+        return;
+      }
+
       if (key.ctrl && key.name === "c") {
         deps.shutdown();
         return;
@@ -71,6 +80,26 @@ export function createUiController(deps: UiControllerDeps) {
 
       if (key.ctrl && key.name === "k") {
         current.viewModel.scrollDown(10);
+        return;
+      }
+
+      if (key.name === "pageup") {
+        current.viewModel.scrollUp(16);
+        return;
+      }
+
+      if (key.name === "pagedown") {
+        current.viewModel.scrollDown(16);
+        return;
+      }
+
+      if (key.ctrl && key.name === "b") {
+        current.viewModel.scrollToTop();
+        return;
+      }
+
+      if (key.ctrl && key.name === "n") {
+        current.viewModel.scrollToBottom();
         return;
       }
     });

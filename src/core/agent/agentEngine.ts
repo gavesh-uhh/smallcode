@@ -123,7 +123,7 @@ export class AgentEngine {
     }
 
     callbacks.onStatus("Iteration limit reached.");
-    await this.streamFinal(task, callbacks, true);
+    await this.streamFinal(task, callbacks, true, state.policy.mode);
   }
 
   async generatePlan(task: string): Promise<string[]> {
@@ -206,7 +206,7 @@ export class AgentEngine {
       callbacks.onStatus(
         "Could not parse decision. Asking model for direct response.",
       );
-      await this.streamFinal(task, callbacks, true);
+      await this.streamFinal(task, callbacks, true, state.policy.mode);
       return "finish";
     }
 
@@ -241,7 +241,7 @@ export class AgentEngine {
 
     state.stage = "respond";
     callbacks.onStatus("Finalizing response.");
-    await this.streamFinal(task, callbacks, false);
+    await this.streamFinal(task, callbacks, false, state.policy.mode);
     return "finish";
   }
 
@@ -257,7 +257,7 @@ export class AgentEngine {
       callbacks.onStatus(
         "Model returned tool action without tool name. Stopping.",
       );
-      await this.streamFinal(task, callbacks, true);
+      await this.streamFinal(task, callbacks, true, state.policy.mode);
       return "finish";
     }
 
@@ -267,6 +267,11 @@ export class AgentEngine {
       this.addToolObservation(iteration, toolName, decision.input, observation);
       callbacks.onStatus(observation);
       return "continue";
+    }
+
+    const toolRationale = formatToolRationale(decision, toolName);
+    if (toolRationale) {
+      callbacks.onReasoningChunk?.(`${toolRationale}\n`);
     }
 
     const policyRejection = this.getToolRejection(
@@ -332,7 +337,7 @@ export class AgentEngine {
       callbacks.onStatus(
         "Detected repeated identical tool result. Finalizing with best effort.",
       );
-      await this.streamFinal(task, callbacks, true);
+      await this.streamFinal(task, callbacks, true, state.policy.mode);
       return "finish";
     }
 
@@ -658,11 +663,12 @@ export class AgentEngine {
     task: string,
     callbacks: AgentCallbacks,
     includeLimitWarning: boolean,
+    mode: TaskMode,
   ): Promise<void> {
     const messages: Message[] = [
       {
         role: "system",
-        content: buildFinalSystemPrompt({ task, includeLimitWarning }),
+        content: buildFinalSystemPrompt({ task, includeLimitWarning, mode }),
       },
       ...this.memory.getMessages(),
       {
@@ -805,6 +811,14 @@ function stringifyInput(input: unknown): string {
 
 function short(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}...` : value;
+}
+
+function formatToolRationale(decision: AgentDecision, toolName: string): string {
+  const reason = (decision.reason ?? decision.thought ?? "").trim();
+  if (reason) {
+    return `Tool choice (${toolName}): ${reason}`;
+  }
+  return `Tool choice (${toolName}): executing the next best available action.`;
 }
 
 function getFriendlyToolStatus(
