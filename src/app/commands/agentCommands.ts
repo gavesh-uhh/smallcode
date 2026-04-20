@@ -66,7 +66,11 @@ export async function handleAgentCommand(
   }
 
   if (sub === "profile") {
-    if (subArgLine !== "small" && subArgLine !== "balanced" && subArgLine !== "ultra") {
+    if (
+      subArgLine !== "small" &&
+      subArgLine !== "balanced" &&
+      subArgLine !== "ultra"
+    ) {
       current.viewModel.addError(COMMAND_USAGE.agentProfile);
       return true;
     }
@@ -77,14 +81,59 @@ export async function handleAgentCommand(
   }
 
   if (sub === "iterations") {
-    const value = Number(subArgLine);
-    if (!Number.isInteger(value) || value < 1 || value > 24) {
-      current.viewModel.addError(COMMAND_USAGE.agentIterations);
+    const [action, ...rest] = subArgLine.split(/\s+/);
+    const restArg = rest.join(" ").trim();
+
+    if (action === "adaptive") {
+      if (restArg !== "on" && restArg !== "off") {
+        current.viewModel.addError("Usage: /agent iterations adaptive on|off");
+        return true;
+      }
+      deps.runtime.adaptive.enabled = restArg === "on";
+      deps.applyAgentRuntime();
+      current.viewModel.addInfo(
+        `Adaptive iterations: ${deps.runtime.adaptive.enabled ? "ON" : "OFF"}`,
+      );
+      return true;
+    }
+
+    if (action === "extend") {
+      const value = Number(restArg);
+      if (!Number.isInteger(value) || value < 1 || value > 50) {
+        current.viewModel.addError("Usage: /agent iterations extend <1..50>");
+        return true;
+      }
+      deps.runtime.adaptive.extendBy = value;
+      deps.applyAgentRuntime();
+      current.viewModel.addInfo(`Extension set to ${value} steps`);
+      return true;
+    }
+
+    if (action === "cap") {
+      const value = Number(restArg);
+      if (!Number.isInteger(value) || value < 32 || value > 1000) {
+        current.viewModel.addError("Usage: /agent iterations cap <32..1000>");
+        return true;
+      }
+      deps.runtime.adaptive.maxCap = value;
+      deps.applyAgentRuntime();
+      current.viewModel.addInfo(`Max cap set to ${value}`);
+      return true;
+    }
+
+    const value = Number(action);
+    if (!Number.isInteger(value) || value < 1 || value > 256) {
+      current.viewModel.addError(
+        "Usage: /agent iterations <1..256> | adaptive on|off | extend <1..50> | cap <32..1000>",
+      );
       return true;
     }
     deps.runtime.maxIterations = value;
+    deps.runtime.adaptive.startLimit = value;
+    deps.runtime.adaptive.currentLimit = value;
     deps.applyAgentRuntime();
-    current.viewModel.addInfo(`Agent iterations set to ${deps.runtime.maxIterations}`);
+    const suffix = deps.runtime.adaptive.enabled ? " (adaptive)" : "";
+    current.viewModel.addInfo(`Iteration limit: ${value}${suffix}`);
     return true;
   }
 
@@ -93,7 +142,9 @@ export async function handleAgentCommand(
     for (let i = 0; i < sessionList.length; i++) {
       const session = sessionList[i];
       const marker = session.id === deps.state.activeSessionId ? "▸" : " ";
-      current.viewModel.addInfo(`${marker} ${i + 1}. ${session.title}  (${session.id})  [${session.status}]`);
+      current.viewModel.addInfo(
+        `${marker} ${i + 1}. ${session.title}  (${session.id})  [${session.status}]`,
+      );
     }
     return true;
   }
@@ -105,9 +156,10 @@ export async function handleAgentCommand(
     }
     const tabs = [...deps.sessions.values()];
     const index = Number(subArgLine);
-    const byIndex = Number.isInteger(index) && index >= 1 && index <= tabs.length
-      ? tabs[index - 1].id
-      : null;
+    const byIndex =
+      Number.isInteger(index) && index >= 1 && index <= tabs.length
+        ? tabs[index - 1].id
+        : null;
     const targetId = byIndex ?? subArgLine;
     if (!deps.sessions.has(targetId)) {
       current.viewModel.addError(`Unknown session: ${subArgLine}`);

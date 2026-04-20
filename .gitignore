@@ -1,5 +1,8 @@
-# Deno
+# Context Documentation
 docs/
+plans/
+
+# Deno
 .deno/
 deno.lock
 

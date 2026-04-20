@@ -10,8 +10,14 @@ export const OLLAMA_CONFIG = {
 
 export const AGENT_CONFIG = {
   defaultProfile: "small" as AgentProfile,
-  defaultMaxIterations: 8,
+  defaultMaxIterations: 32,
   defaultDebug: false,
+  adaptive: {
+    enabled: true,
+    startLimit: 32,
+    extendBy: 10,
+    maxCap: 256,
+  },
   decision: {
     temperature: 0.0,
     ctxByProfile: {

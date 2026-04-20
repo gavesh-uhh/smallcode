@@ -26,7 +26,7 @@ export const HELP_COMMANDS = {
     ["/agent switch <id|n>", "Switch session"],
     ["/agent close [id]", "Close session (except main)"],
     ["/agent profile", "Set agent profile (small|balanced|ultra)"],
-    ["/agent iterations", "Set iteration cap (1..24)"],
+    ["/agent iterations", "Adaptive iteration limits (default: 32)"],
   ] as const satisfies readonly HelpRow[],
 } as const;
 
@@ -58,7 +58,8 @@ export const COMMAND_USAGE = {
   agent: "Usage: /agent new|list|switch|close ...",
   agentSwitch: "Usage: /agent switch <id|index>",
   agentProfile: "Usage: /agent profile small|balanced|ultra",
-  agentIterations: "Usage: /agent iterations <1..24>",
+  agentIterations:
+    "Usage: /agent iterations <1..256> | adaptive on|off | extend <1..50> | cap <32..1000>",
   agentFallback: "Usage: /agent new|list|switch|close|profile|iterations ...",
 } as const;
 

@@ -12,6 +12,7 @@ import {
 import { ToolRegistry } from "../../platform/tools/registry.ts";
 import { ViewModel } from "../../ui/tui/viewModel.ts";
 import type { AgentSession } from "../types.ts";
+import type { AdaptiveIterationConfig } from "../types.ts";
 import type { AppContext } from "./appContext.ts";
 
 type RunAgentTask = (session: AgentSession, task: string) => Promise<void>;
@@ -23,13 +24,18 @@ interface SessionManagerDeps {
   runAgentTaskRef: () => RunAgentTask;
 }
 
-export function createSessionManager(
-  { context, updateStatusBar, redraw, runAgentTaskRef }: SessionManagerDeps,
-) {
+export function createSessionManager({
+  context,
+  updateStatusBar,
+  redraw,
+  runAgentTaskRef,
+}: SessionManagerDeps) {
   function getCurrentSession(): AgentSession | undefined {
     let session = context.sessions.get(context.state.activeSessionId);
     if (!session) {
-      const fallback = context.sessions.values().next().value as AgentSession | undefined;
+      const fallback = context.sessions.values().next().value as
+        | AgentSession
+        | undefined;
       if (fallback) {
         context.state.activeSessionId = fallback.id;
         session = fallback;
@@ -71,7 +77,10 @@ export function createSessionManager(
 
     const toolExecutionContext = {
       rootDir: context.rootDir,
-      confirmWrite: async (question: string, _diff: string): Promise<boolean> => {
+      confirmWrite: async (
+        question: string,
+        _diff: string,
+      ): Promise<boolean> => {
         if (!context.state.confirmWrites) return true;
         if (/^overwrite\s+/i.test(question)) {
           vm.addInfo("Overwriting file...");
@@ -89,11 +98,14 @@ export function createSessionManager(
         const workerId = `agent-${context.state.sessionCounter}`;
         const workerTitle = `Worker ${context.state.sessionCounter}`;
         const workerSession = createSession(workerId, workerTitle);
-        vm.addInfo(`Delegating sub-task (Worker ${context.state.sessionCounter})...`);
+        vm.addInfo(
+          `Delegating sub-task (Worker ${context.state.sessionCounter})...`,
+        );
 
         await runAgentTaskRef()(workerSession, task);
 
-        const lastMsg = workerSession.memory.getMessages()
+        const lastMsg = workerSession.memory
+          .getMessages()
           .filter((m) => m.role === "assistant")
           .pop();
         return lastMsg?.content ?? "No response from worker.";
@@ -108,10 +120,20 @@ export function createSessionManager(
     toolsContext.register(new GitTool(toolExecutionContext));
     toolsContext.register(new DelegateTaskTool(toolExecutionContext));
 
+    const sessionAdaptive: AdaptiveIterationConfig = {
+      enabled: context.runtime.adaptive.enabled,
+      startLimit: context.runtime.adaptive.startLimit,
+      currentLimit: context.runtime.adaptive.startLimit,
+      extendBy: context.runtime.adaptive.extendBy,
+      maxCap: context.runtime.adaptive.maxCap,
+      extensions: 0,
+    };
+
     const agent = new AgentEngine(context.llm, toolsContext, memory, {
       maxIterations: context.runtime.maxIterations,
       profile: context.runtime.profile,
       debug: context.runtime.debug,
+      adaptive: sessionAdaptive,
     });
 
     vm.onChange(() => {
@@ -146,7 +168,9 @@ export function createSessionManager(
         profile: context.runtime.profile,
         debug: context.runtime.debug,
       });
-      session.memory.setMaxHistory(context.runtime.profile === "ultra" ? 128 : 64);
+      session.memory.setMaxHistory(
+        context.runtime.profile === "ultra" ? 128 : 64,
+      );
     }
   }
 

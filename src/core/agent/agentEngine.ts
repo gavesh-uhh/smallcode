@@ -30,12 +30,22 @@ interface AgentCallbacks {
   onAssistantDone: (full: string) => void;
 }
 
+interface AdaptiveConfig {
+  enabled: boolean;
+  startLimit: number;
+  currentLimit: number;
+  extendBy: number;
+  maxCap: number;
+  extensions: number;
+}
+
 interface AgentOptions {
   maxIterations: number;
   profile: AgentProfile;
   debug: boolean;
   decisionTemperature: number;
   decisionCtx: number;
+  adaptive?: AdaptiveConfig;
 }
 
 type TaskMode = "action" | "analysis";
@@ -76,11 +86,14 @@ export class AgentEngine {
       maxIterations: options.maxIterations ?? AGENT_CONFIG.defaultMaxIterations,
       profile: options.profile ?? AGENT_CONFIG.defaultProfile,
       debug: options.debug ?? AGENT_CONFIG.defaultDebug,
-      decisionTemperature: options.decisionTemperature ?? AGENT_CONFIG.decision.temperature,
-      decisionCtx: options.decisionCtx ??
+      decisionTemperature:
+        options.decisionTemperature ?? AGENT_CONFIG.decision.temperature,
+      decisionCtx:
+        options.decisionCtx ??
         AGENT_CONFIG.decision.ctxByProfile[
           options.profile ?? AGENT_CONFIG.defaultProfile
         ],
+      adaptive: options.adaptive,
     };
   }
 
@@ -95,6 +108,10 @@ export class AgentEngine {
     return this.memory.getStats();
   }
 
+  getAdaptiveConfig(): AdaptiveConfig | undefined {
+    return this.settings.adaptive;
+  }
+
   async run(
     task: string,
     callbacks: AgentCallbacks,
@@ -104,15 +121,21 @@ export class AgentEngine {
     const state = this.createRunState(task);
     this.seedTaskFacts(task, state.policy.mode);
 
+    const adaptive = this.settings.adaptive;
+    let currentLimit = adaptive?.enabled
+      ? adaptive.currentLimit
+      : this.settings.maxIterations;
+
     callbacks.onStatus(
-      `Task received. Iteration limit: ${this.settings.maxIterations}. Profile: ${this.settings.profile}. Mode: ${state.policy.mode}`,
+      `Task received. Iteration limit: ${currentLimit}${adaptive?.enabled ? ` (adaptive)` : ""}. Profile: ${this.settings.profile}. Mode: ${state.policy.mode}`,
     );
 
-    for (let i = 1; i <= this.settings.maxIterations; i++) {
+    let iteration = 1;
+    while (iteration <= currentLimit) {
       this.memory.nextTurn();
       const flow = await this.runSingleStep(
         task,
-        i,
+        iteration,
         state,
         callbacks,
         contextSummaries,
@@ -120,6 +143,25 @@ export class AgentEngine {
       if (flow === "finish") {
         return;
       }
+
+      if (
+        adaptive?.enabled &&
+        iteration === currentLimit &&
+        currentLimit < adaptive.maxCap
+      ) {
+        const newLimit = Math.min(
+          currentLimit + adaptive.extendBy,
+          adaptive.maxCap,
+        );
+        adaptive.currentLimit = newLimit;
+        adaptive.extensions += 1;
+        currentLimit = newLimit;
+        callbacks.onStatus(
+          `Adaptive limit extended: ${iteration} → ${newLimit} (extension #${adaptive.extensions})`,
+        );
+      }
+
+      iteration++;
     }
 
     callbacks.onStatus("Iteration limit reached.");
@@ -302,8 +344,7 @@ export class AgentEngine {
         callbacks.onStatus(`Preflight: ${critique}`);
         this.memory.addMessage({
           role: "system",
-          content:
-            `Preflight rejected this action: ${critique}\nPlease fix the issue and propose a corrected tool call.`,
+          content: `Preflight rejected this action: ${critique}\nPlease fix the issue and propose a corrected tool call.`,
         });
         return "continue";
       }
@@ -355,8 +396,7 @@ export class AgentEngine {
     if (toolPolicyIssue) {
       return {
         statusLine: `Tool policy rejected call: ${toolPolicyIssue}`,
-        memoryMessage:
-          `Tool policy rejection for ${toolName}: ${toolPolicyIssue}. Propose a corrected tool call.`,
+        memoryMessage: `Tool policy rejection for ${toolName}: ${toolPolicyIssue}. Propose a corrected tool call.`,
       };
     }
 
@@ -384,9 +424,10 @@ export class AgentEngine {
     observation: string,
   ): boolean {
     const signature = `${toolName}|${toolInput}|${short(observation, 220)}`;
-    state.repeatedIdenticalCount = signature === state.previousSignature
-      ? state.repeatedIdenticalCount + 1
-      : 0;
+    state.repeatedIdenticalCount =
+      signature === state.previousSignature
+        ? state.repeatedIdenticalCount + 1
+        : 0;
     state.previousSignature = signature;
     return state.repeatedIdenticalCount >= 1;
   }
@@ -400,8 +441,8 @@ export class AgentEngine {
     state.lastObservation = observation;
     const success = looksSuccessfulObservation(observation);
     state.hasSuccessfulObservation = state.hasSuccessfulObservation || success;
-    state.hasFailureObservation = state.hasFailureObservation ||
-      looksFailureObservation(observation);
+    state.hasFailureObservation =
+      state.hasFailureObservation || looksFailureObservation(observation);
     if (state.requiredArtifacts.length > 0 && success) {
       for (const requirement of state.requiredArtifacts) {
         const key = artifactKey(requirement);
@@ -479,7 +520,9 @@ export class AgentEngine {
     const clauses = task
       .split(/[.!?\n]/)
       .map((line) => line.trim())
-      .filter((line) => /(must|only|without|do not|don't|never|avoid)/i.test(line))
+      .filter((line) =>
+        /(must|only|without|do not|don't|never|avoid)/i.test(line),
+      )
       .slice(0, 4);
 
     clauses.forEach((clause, idx) => {
@@ -534,9 +577,10 @@ export class AgentEngine {
     contextSummaries: string[] = [],
     stage: ExecutionStage = "decide",
   ): Promise<AgentDecision | null> {
-    const summaryText = contextSummaries.length > 0
-      ? `Completed sub-tasks summaries:\n- ${contextSummaries.join("\n- ")}`
-      : "";
+    const summaryText =
+      contextSummaries.length > 0
+        ? `Completed sub-tasks summaries:\n- ${contextSummaries.join("\n- ")}`
+        : "";
 
     const systemPrompt = buildDecisionPrompt({
       task,
@@ -551,7 +595,9 @@ export class AgentEngine {
 
     const messages: Message[] = [
       { role: "system", content: systemPrompt },
-      ...(summaryText ? [{ role: "system" as const, content: summaryText }] : []),
+      ...(summaryText
+        ? [{ role: "system" as const, content: summaryText }]
+        : []),
       ...this.memory.getMessages(),
       { role: "system", content: buildFormattingSentinel() },
     ];
@@ -574,12 +620,10 @@ export class AgentEngine {
     }
 
     let fuzzyRaw = "";
-    for await (
-      const chunk of this.llm.chatStream(messages, {
-        temperature: this.settings.decisionTemperature,
-        numCtx: this.settings.decisionCtx,
-      })
-    ) {
+    for await (const chunk of this.llm.chatStream(messages, {
+      temperature: this.settings.decisionTemperature,
+      numCtx: this.settings.decisionCtx,
+    })) {
       if (chunk.type === "reasoning") {
         callbacks.onReasoningChunk?.(chunk.text);
       } else {
@@ -684,12 +728,10 @@ export class AgentEngine {
     let fullContent = "";
     let fullReasoning = "";
 
-    for await (
-      const chunk of this.llm.chatStream(messages, {
-        temperature: AGENT_CONFIG.final.temperature,
-        numCtx: this.settings.decisionCtx,
-      })
-    ) {
+    for await (const chunk of this.llm.chatStream(messages, {
+      temperature: AGENT_CONFIG.final.temperature,
+      numCtx: this.settings.decisionCtx,
+    })) {
       if (chunk.type === "reasoning") {
         fullReasoning += chunk.text;
         callbacks.onReasoningChunk?.(chunk.text);
@@ -723,7 +765,8 @@ function parseDecision(raw: string): ParseResult {
     }
     return {
       success: false,
-      error: "JSON is valid but missing required fields: 'action' (must be 'tool' or 'respond').",
+      error:
+        "JSON is valid but missing required fields: 'action' (must be 'tool' or 'respond').",
     };
   }
 
@@ -774,7 +817,8 @@ function tryParseJson(value: string): Record<string, unknown> | null {
 }
 
 function normalizeDecision(raw: Record<string, unknown>): AgentDecision | null {
-  const actionRaw = typeof raw.action === "string" ? raw.action.toLowerCase() : "";
+  const actionRaw =
+    typeof raw.action === "string" ? raw.action.toLowerCase() : "";
   if (actionRaw !== "tool" && actionRaw !== "respond") {
     if (raw.tool || raw.input) {
       return normalizeDecision({ ...raw, action: "tool" });
@@ -788,9 +832,10 @@ function normalizeDecision(raw: Record<string, unknown>): AgentDecision | null {
     action: actionRaw as "tool" | "respond",
     tool: typeof raw.tool === "string" ? raw.tool : undefined,
     input: raw.input,
-    expected_observation: typeof raw.expected_observation === "string"
-      ? raw.expected_observation
-      : undefined,
+    expected_observation:
+      typeof raw.expected_observation === "string"
+        ? raw.expected_observation
+        : undefined,
   };
 }
 
@@ -813,7 +858,10 @@ function short(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}...` : value;
 }
 
-function formatToolRationale(decision: AgentDecision, toolName: string): string {
+function formatToolRationale(
+  decision: AgentDecision,
+  toolName: string,
+): string {
   const reason = (decision.reason ?? decision.thought ?? "").trim();
   if (reason) {
     return `Tool choice (${toolName}): ${reason}`;
@@ -843,7 +891,9 @@ function getFriendlyToolStatus(
   const target = extractToolTarget(input);
   const label = `Step ${stepIndex}`;
   const verb = verbs[toolName] ?? "Running";
-  return target ? `${label} : ${verb} (${target})` : `${label} : ${verb} ${toolName}`;
+  return target
+    ? `${label} : ${verb} (${target})`
+    : `${label} : ${verb} ${toolName}`;
 }
 
 function extractToolTarget(input: unknown): string {
@@ -851,7 +901,8 @@ function extractToolTarget(input: unknown): string {
     return "";
   }
   const payload = input as Record<string, unknown>;
-  const candidate = payload.path ??
+  const candidate =
+    payload.path ??
     payload.command ??
     payload.name ??
     payload.query ??
@@ -868,10 +919,9 @@ function classifyTaskPolicy(task: string): TaskPolicy {
     return { mode: "analysis" };
   }
   if (
-    /\b(create|write|update|delete|edit|rename|remove|run|execute|fix|implement|refactor|add|change)\b/
-      .test(
-        lower,
-      )
+    /\b(create|write|update|delete|edit|rename|remove|run|execute|fix|implement|refactor|add|change)\b/.test(
+      lower,
+    )
   ) {
     return { mode: "action" };
   }
@@ -897,7 +947,8 @@ function looksSuccessfulObservation(observation: string): boolean {
 
 function looksFailureObservation(observation: string): boolean {
   const lower = observation.toLowerCase();
-  const hasNonZeroExit = /exit_code:\s*(-?\d+)/i.test(lower) && !/exit_code:\s*0\b/i.test(lower);
+  const hasNonZeroExit =
+    /exit_code:\s*(-?\d+)/i.test(lower) && !/exit_code:\s*0\b/i.test(lower);
   return (
     lower.includes("result: failed") ||
     lower.includes("result: timeout") ||
@@ -914,14 +965,19 @@ function isRecoveryNeeded(observation: string): boolean {
 }
 
 function validateToolDecision(toolName: string, input: unknown): string | null {
-  const payload = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const payload =
+    input && typeof input === "object"
+      ? (input as Record<string, unknown>)
+      : {};
 
   if (toolName === "shell_command") {
-    const command = typeof payload.command === "string" ? payload.command.trim() : "";
+    const command =
+      typeof payload.command === "string" ? payload.command.trim() : "";
     if (!command) {
       return "shell_command requires a non-empty 'command' string.";
     }
-    const dangerous = /(rm\s+-rf\s+\/|del\s+\/s\s+\/q\s+c:\\|format\s+[a-z]:|shutdown|reboot)/i;
+    const dangerous =
+      /(rm\s+-rf\s+\/|del\s+\/s\s+\/q\s+c:\\|format\s+[a-z]:|shutdown|reboot)/i;
     if (dangerous.test(command)) {
       return "shell_command contains a destructive command pattern.";
     }
@@ -989,13 +1045,15 @@ function assessDelegationReadiness(
   nonDelegateToolCalls: number,
 ): { allowed: boolean; reason: string } {
   const lower = task.toLowerCase();
-  const explicitDelegation = isExplicitAgentDirective(lower) ||
+  const explicitDelegation =
+    isExplicitAgentDirective(lower) ||
     /\b(delegate|sub-?agent|worker|spawn)\b/.test(lower);
   if (explicitDelegation) {
     return { allowed: true, reason: "explicit delegation request" };
   }
 
-  const simplePrompt = /^\s*(hi|hello|hey|yo|hola)\b/.test(lower) ||
+  const simplePrompt =
+    /^\s*(hi|hello|hey|yo|hola)\b/.test(lower) ||
     lower.split(/\s+/).filter(Boolean).length <= 8;
   if (simplePrompt) {
     return { allowed: false, reason: "Task appears simple; do not delegate." };

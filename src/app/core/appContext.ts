@@ -2,7 +2,12 @@ import { OllamaClient } from "../../core/llm/ollamaClient.ts";
 import { AGENT_CONFIG, OLLAMA_CONFIG } from "../../core/config.ts";
 import { InputHandler } from "../../ui/tui/input.ts";
 import { Renderer } from "../../ui/tui/renderer.ts";
-import type { AgentRuntimeConfig, AgentSession, AppState } from "../types.ts";
+import type {
+  AdaptiveIterationConfig,
+  AgentRuntimeConfig,
+  AgentSession,
+  AppState,
+} from "../types.ts";
 
 export interface AppContext {
   rootDir: string;
@@ -15,6 +20,15 @@ export interface AppContext {
 }
 
 export function createAppContext(rootDir: string): AppContext {
+  const adaptiveConfig: AdaptiveIterationConfig = {
+    enabled: AGENT_CONFIG.adaptive.enabled,
+    startLimit: AGENT_CONFIG.adaptive.startLimit,
+    currentLimit: AGENT_CONFIG.adaptive.startLimit,
+    extendBy: AGENT_CONFIG.adaptive.extendBy,
+    maxCap: AGENT_CONFIG.adaptive.maxCap,
+    extensions: 0,
+  };
+
   return {
     rootDir,
     llm: new OllamaClient(OLLAMA_CONFIG.baseUrl, OLLAMA_CONFIG.defaultModel),
@@ -25,6 +39,7 @@ export function createAppContext(rootDir: string): AppContext {
       profile: AGENT_CONFIG.defaultProfile,
       maxIterations: AGENT_CONFIG.defaultMaxIterations,
       debug: AGENT_CONFIG.defaultDebug,
+      adaptive: adaptiveConfig,
     },
     state: {
       activeSessionId: "main",

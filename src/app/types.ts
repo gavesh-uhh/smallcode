@@ -20,10 +20,20 @@ export interface AgentSession {
   plan?: MissionPlan;
 }
 
+export interface AdaptiveIterationConfig {
+  enabled: boolean;
+  startLimit: number;
+  currentLimit: number;
+  extendBy: number;
+  maxCap: number;
+  extensions: number;
+}
+
 export interface AgentRuntimeConfig {
   profile: AgentProfile;
   maxIterations: number;
   debug: boolean;
+  adaptive: AdaptiveIterationConfig;
 }
 
 export interface AppState {
